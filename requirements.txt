@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+matplotlib
+seaborn
+statsmodels
+patsy
+Pillow
+scipy
+openpyxl

@@ -1,0 +1,1 @@
+web: sh setup.sh && streamlit run standarisasi_cpue_app.py
