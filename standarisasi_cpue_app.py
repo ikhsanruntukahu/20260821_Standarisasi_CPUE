@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 plt.style.use("seaborn-v0_8-whitegrid")
 
 # =========================================================
-# PEMETAAN NAMA BULAN GLOBAL
+# DEFINISI NAMA BULAN
 # =========================================================
 month_map = {
     "1": "Jan",
@@ -349,7 +349,7 @@ st.markdown(
     """
     <h1 style='color:#0E4C92; margin-bottom:0px;'>Aplikasi Standarisasi Catch Per Unit Effort (CPUE)</h1>
     <h3 style='color:#444444; margin-top:5px;'>Pemodelan GLM & GAM untuk Standarisasi Catch Per Unit Effort</h3>
-    <p style='color:#666666;'>**Tahap Uji coba</p>
+    <p style='color:#666666;'>*Tahap Pengembangan</p>
 """,
     unsafe_allow_html=True,
 )
@@ -365,8 +365,8 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is None:
     st.info(
-        "**Silakan unggah file Excel (.xlsx)** yang berisi data operasional"
-        " penangkapan untuk memulai proses analisis."
+        "**Silakan unggah file Excel (.xlsx)** yang berisi data operasional penangkapan dan lingkungan"
+        " penangkapan untuk memulai proses analisis (minimal selama 5 tahun)."
     )
 
     st.markdown(
@@ -659,6 +659,45 @@ metrics_df["Delta_AIC"] = metrics_df["AIC"] - metrics_df["AIC"].min()
 best_model_name = metrics_df.loc[metrics_df["AIC"].idxmin(), "Model"]
 valid_model_list = list(metrics_df["Model"])
 
+# PREPARASI TABEL RINGKASAN STATISTIK DESKRIPTIF
+stat_rows = []
+num_list = list(
+    dict.fromkeys(
+        ["berat_kg"] + ([effort_col] if effort_col else []) + valid_nums
+    )
+)
+
+for col in num_list:
+    if col in df_model.columns:
+        s = df_model[col]
+        stat_rows.append({
+            "Nama Variabel": col,
+            "Tipe Data": "Numerik",
+            "Jumlah (N)": fmt_int(len(s)),
+            "Mean ± Std": f"{fmt_num(s.mean(), 2)} ± {fmt_num(s.std(), 2)}",
+            "Min": fmt_num(s.min(), 2),
+            "Median": fmt_num(s.median(), 2),
+            "Max": fmt_num(s.max(), 2),
+            "Keterangan / Modus": "-",
+        })
+
+for col in valid_cats:
+    if col in df_model.columns:
+        s = df_model[col]
+        mode_val = s.mode()[0] if not s.mode().empty else "-"
+        stat_rows.append({
+            "Nama Variabel": col,
+            "Tipe Data": "Kategorikal",
+            "Jumlah (N)": fmt_int(len(s)),
+            "Mean ± Std": "-",
+            "Min": "-",
+            "Median": "-",
+            "Max": "-",
+            "Keterangan / Modus": f"{fmt_int(s.nunique())} Kat. (Modus: {mode_val})",
+        })
+
+df_stat_summary = pd.DataFrame(stat_rows)
+
 # =========================================================
 # 5. DASHBOARD & HASIL ANALISIS (TAB INTEGRASI)
 # =========================================================
@@ -683,6 +722,70 @@ df_vif = None
 
 # --- TAB 0: UJI ASUMSI & STATISTIK ---
 with tab0:
+    # 1. RINGKASAN STATISTIK DESKRIPTIF VARIABEL
+    st.subheader("Ringkasan Statistik Deskriptif Variabel")
+    col_stat, _ = st.columns([4, 1])
+    with col_stat:
+        st.dataframe(df_stat_summary, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Visualisasi Sebaran Data (Boxplot)")
+
+    # Boxplot Khusus Variabel Target (berat_kg): Keseluruhan & Per Tahun
+    st.markdown("**Boxplot Variabel Target (`berat_kg`)**")
+    if "tahun" in df_model.columns:
+        fig_bkg, (ax_bkg1, ax_bkg2) = plt.subplots(1, 2, figsize=(12, 4))
+        sns.boxplot(y=df_model["berat_kg"], ax=ax_bkg1, color="#0E4C92")
+        ax_bkg1.set_title("Boxplot Berat Ikan (seluruh data)", fontsize=10, fontweight="bold")
+        ax_bkg1.set_ylabel("Berat (kg)")
+
+        # Urutkan kategori tahun jika numerik/teks
+        df_sort_yr = df_model.copy()
+        df_sort_yr["tahun_sort"] = pd.to_numeric(df_sort_yr["tahun"], errors="ignore")
+        df_sort_yr = df_sort_yr.sort_values("tahun_sort")
+
+        sns.boxplot(x="tahun", y="berat_kg", data=df_sort_yr, ax=ax_bkg2, palette="Blues")
+        ax_bkg2.set_title("Boxplot Berat Ikan (Per Tahun)", fontsize=10, fontweight="bold")
+        ax_bkg2.set_xlabel("Tahun")
+        ax_bkg2.set_ylabel("Berat (kg)")
+        ax_bkg2.set_xticklabels(ax_bkg2.get_xticklabels(), rotation=30, ha="right")
+    else:
+        fig_bkg, ax_bkg1 = plt.subplots(figsize=(6, 4))
+        sns.boxplot(y=df_model["berat_kg"], ax=ax_bkg1, color="#0E4C92")
+        ax_bkg1.set_title("Boxplot Berat Ikan", fontsize=10, fontweight="bold")
+        ax_bkg1.set_ylabel("Berat (kg)")
+
+    plt.tight_layout()
+    st.pyplot(fig_bkg)
+    plt.close(fig_bkg)
+
+    # Boxplot Seluruh Variabel Numerik Lainnya
+    other_nums = [c for c in num_list if c != "berat_kg"]
+    if other_nums:
+        st.markdown("**Boxplot Variabel Numerik Lainnya**")
+        n_other = len(other_nums)
+        cols_per_row = 3
+        rows_other = int(np.ceil(n_other / cols_per_row))
+        
+        fig_num_box, axes_num_box = plt.subplots(rows_other, cols_per_row, figsize=(14, 3.5 * rows_other))
+        axes_num_flat = axes_num_box.flatten() if n_other > 1 else [axes_num_box]
+
+        for idx_n, col_n in enumerate(other_nums):
+            ax_n = axes_num_flat[idx_n]
+            sns.boxplot(y=df_model[col_n], ax=ax_n, color="#E67E22")
+            ax_n.set_title(f"Boxplot {col_n}", fontsize=10, fontweight="bold")
+            ax_n.set_ylabel(col_n)
+
+        for i in range(n_other, len(axes_num_flat)):
+            fig_num_box.delaxes(axes_num_flat[i])
+
+        plt.tight_layout()
+        st.pyplot(fig_num_box)
+        plt.close(fig_num_box)
+
+    st.markdown("---")
+
+    # 2. UJI NORMALITAS
     st.subheader("1. Uji Normalitas (berat_kg)")
     target_data = df_model["berat_kg"].dropna()
 
@@ -732,6 +835,8 @@ with tab0:
     plt.close(fig_norm)
 
     st.markdown("---")
+
+    # 3. UJI HETEROGENITAS VARIANS
     st.subheader("2. Uji Heterogenitas Varians (Levene's Test)")
     st.caption("Menguji kesamaan varians `berat_kg` terhadap setiap variabel kategorikal independen.")
 
@@ -765,6 +870,8 @@ with tab0:
         st.warning("Tidak ada variabel kategorikal valid untuk diuji heterogenitasnya.")
 
     st.markdown("---")
+
+    # 4. UJI MULTIKOLINEARITAS
     st.subheader("3. Uji Multikolinearitas (Variance Inflation Factor - VIF)")
     st.caption("Menguji adanya multikolinearitas antar prediktor independen.")
 
@@ -796,54 +903,7 @@ with tab0:
 
 # --- TAB 1: EVALUASI MODEL ---
 with tab1:
-    # 1. TABEL RINGKASAN STATISTIK DESKRIPTIF VARIABEL
-    st.subheader("Ringkasan Statistik Deskriptif Variabel")
-
-    stat_rows = []
-    num_list = list(
-        dict.fromkeys(
-            ["berat_kg"] + ([effort_col] if effort_col else []) + valid_nums
-        )
-    )
-
-    for col in num_list:
-        if col in df_model.columns:
-            s = df_model[col]
-            stat_rows.append({
-                "Nama Variabel": col,
-                "Tipe Data": "Numerik",
-                "Jumlah (N)": fmt_int(len(s)),
-                "Mean ± Std": f"{fmt_num(s.mean(), 2)} ± {fmt_num(s.std(), 2)}",
-                "Min": fmt_num(s.min(), 2),
-                "Median": fmt_num(s.median(), 2),
-                "Max": fmt_num(s.max(), 2),
-                "Keterangan / Modus": "-",
-            })
-
-    for col in valid_cats:
-        if col in df_model.columns:
-            s = df_model[col]
-            mode_val = s.mode()[0] if not s.mode().empty else "-"
-            stat_rows.append({
-                "Nama Variabel": col,
-                "Tipe Data": "Kategorikal",
-                "Jumlah (N)": fmt_int(len(s)),
-                "Mean ± Std": "-",
-                "Min": "-",
-                "Median": "-",
-                "Max": "-",
-                "Keterangan / Modus": f"{fmt_int(s.nunique())} Kat. (Modus: {mode_val})",
-            })
-
-    df_stat_summary = pd.DataFrame(stat_rows)
-
-    col_stat, _ = st.columns([4, 1])
-    with col_stat:
-        st.dataframe(df_stat_summary, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # 2. RINGKASAN PERBANDINGAN MODEL
+    # 1. RINGKASAN PERBANDINGAN MODEL
     st.subheader("Ringkasan Perbandingan Model")
 
     col_m1, col_m2, col_m3 = st.columns(3)
@@ -882,7 +942,7 @@ with tab1:
 
     st.markdown("---")
 
-    # 3. TABEL KHUSUS OVERDISPERSION RATIO SELURUH MODEL
+    # 2. TABEL KHUSUS OVERDISPERSION RATIO SELURUH MODEL
     st.markdown("**Tabel Overdispersion Ratio Seluruh Model**")
 
     disp_rows = []
@@ -947,9 +1007,9 @@ with tab1:
     st.pyplot(fig_res)
 
     st.info(
-        "**Interpretasi Otomatis Residual Plot:**\n\n"
+        "**Interpretasi Residual Plot:**\n\n"
         "• **Sebaran di Sekitar Garis Nol (y = 0):** Residual yang tersebar secara acak dan seimbang di sekitar garis merah horizontal menunjukkan estimasi model tidak bias (unbiased).\n"
-        f"• **Kinerja Model Terpilih ({best_model_name}):** Memiliki sebaran residual yang paling terdistribusi rata dan homogen di sekitar garis nol dibanding GLM Poisson. Hal ini mengindikasikan variabilitas data hasil tangkapan berhasil ditangkap secara tepat tanpa gejala pola kurva tersisa (heteroskedastisitas)."
+        f"**Kinerja Model Terpilih ({best_model_name}):** Memiliki sebaran residual yang paling terdistribusi rata dan homogen di sekitar garis nol dibanding GLM Poisson. Hal ini mengindikasikan variabilitas data hasil tangkapan berhasil ditangkap secara tepat tanpa gejala pola kurva tersisa (heteroskedastisitas)."
     )
 
 # --- TAB 2: EFEK PARSIAL DINAMIS ---
@@ -989,7 +1049,7 @@ with tab2:
     plot_idx = 0
     partial_interp_list = []
 
-    # KAMUS NAMA VARIABEL RAMAH BAHASA INDONESIA
+    # KAMUS NAMA VARIABEL BAHASA INDONESIA
     var_label_map = {
         "abk": "Jumlah ABK",
         "panjang_kapal": "Panjang Kapal",
@@ -1008,7 +1068,7 @@ with tab2:
         "daerah": "Daerah Penangkapan",
     }
 
-    # Plot & Analisis Dinamis Numerik (Tanpa Bintang-Bintang)
+    # Plot & Analisis Dinamis Numerik
     for col_name in valid_nums:
         ax = axes_flat[plot_idx]
         grid = np.linspace(df_model[col_name].min(), df_model[col_name].max(), 150)
@@ -1039,7 +1099,7 @@ with tab2:
 
         partial_interp_list.append(f"• {v_label}: {desc}")
 
-    # Plot & Analisis Dinamis Kategorikal (Tanpa Bintang-Bintang)
+    # Plot & Analisis Dinamis Kategorikal
     for cat_col in valid_cats:
         ax = axes_flat[plot_idx]
 
@@ -1096,7 +1156,7 @@ with tab2:
 
     partial_interp_html = "<br>".join(partial_interp_list)
     st.info(
-        f"**Interpretasi Otomatis Efek Parsial Parameter ({selected_model_name_t2}):**\n\n"
+        f"**Interpretasi Efek Parsial Parameter ({selected_model_name_t2}):**\n\n"
         + "\n\n".join(partial_interp_list)
     )
 
@@ -1312,7 +1372,7 @@ with tab3:
             )
             st.pyplot(fig_mo)
 
-    # Menyiapkan Grafik Base64 untuk Laporan Eksekutif HTML
+    # Menyiapkan Grafik Base64 untuk Laporan dalam bentuk HTML
     img_res_b64 = fig_to_base64(fig_res) if fig_res else None
     img_grid_b64 = fig_to_base64(fig_grid) if fig_grid else None
     img_yr_b64 = fig_to_base64(fig_yr) if fig_yr else None
@@ -1327,7 +1387,7 @@ with tab3:
     if fig_mo:
         plt.close(fig_mo)
 
-    # Export Multi-sheet Excel & HTML Executive Report
+    # Export Multi-sheet Excel & HTML Report
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         if "tahun" in valid_cats:
