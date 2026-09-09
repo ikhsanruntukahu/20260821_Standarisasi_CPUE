@@ -97,23 +97,47 @@ def generate_html_report(
     best_aic = fmt_num(raw_aic_val, 2)
     best_r2 = fmt_num(raw_r2_val * 100, 2)
 
-    stat_html = df_stat_summary.to_html(index=False) if df_stat_summary is not None else "<p>Tidak ada data deskriptif.</p>"
-    het_html = df_het.to_html(index=False) if df_het is not None and not df_het.empty else "<p>Tidak ada data uji Levene.</p>"
-    vif_html = df_vif.to_html(index=False) if df_vif is not None and not df_vif.empty else "<p>Tidak ada data VIF.</p>"
+    stat_html = (
+        df_stat_summary.to_html(index=False)
+        if df_stat_summary is not None
+        else "<p>Tidak ada data deskriptif.</p>"
+    )
+    het_html = (
+        df_het.to_html(index=False)
+        if df_het is not None and not df_het.empty
+        else "<p>Tidak ada data uji Levene.</p>"
+    )
+    vif_html = (
+        df_vif.to_html(index=False)
+        if df_vif is not None and not df_vif.empty
+        else "<p>Tidak ada data VIF.</p>"
+    )
 
     yr_interp = ""
     yr_html = ""
     if grid_yr_display is not None and not grid_yr_display.empty:
         yr_html = grid_yr_display.to_html(index=False)
         max_yr_row = grid_yr_display.loc[
-            grid_yr_display["CPUE_std (kg/hari)"].apply(
-                lambda x: float(str(x).replace(".", "").replace(",", ".")) if str(x) != "-" else 0
-            ).idxmax()
+            grid_yr_display["CPUE_std (kg/hari)"]
+            .apply(
+                lambda x: (
+                    float(str(x).replace(".", "").replace(",", "."))
+                    if str(x) != "-"
+                    else 0
+                )
+            )
+            .idxmax()
         ]
         min_yr_row = grid_yr_display.loc[
-            grid_yr_display["CPUE_std (kg/hari)"].apply(
-                lambda x: float(str(x).replace(".", "").replace(",", ".")) if str(x) != "-" else 0
-            ).idxmin()
+            grid_yr_display["CPUE_std (kg/hari)"]
+            .apply(
+                lambda x: (
+                    float(str(x).replace(".", "").replace(",", "."))
+                    if str(x) != "-"
+                    else 0
+                )
+            )
+            .idxmin()
         ]
         yr_interp = f"""
         <div class="interpretation">
@@ -132,9 +156,15 @@ def generate_html_report(
         tm_html = grid_tm_display.to_html(index=False)
         time_label = time_cat.title() if time_cat else "Waktu"
         max_tm_row = grid_tm_display.loc[
-            grid_tm_display["CPUE_std (kg/hari)"].apply(
-                lambda x: float(str(x).replace(".", "").replace(",", ".")) if str(x) != "-" else 0
-            ).idxmax()
+            grid_tm_display["CPUE_std (kg/hari)"]
+            .apply(
+                lambda x: (
+                    float(str(x).replace(".", "").replace(",", "."))
+                    if str(x) != "-"
+                    else 0
+                )
+            )
+            .idxmax()
         ]
         tm_interp = f"""
         <div class="interpretation">
@@ -145,10 +175,18 @@ def generate_html_report(
         </div>
         """
 
-    img_res_tag = f'<img src="{img_res_b64}" class="chart-img">' if img_res_b64 else ""
-    img_grid_tag = f'<img src="{img_grid_b64}" class="chart-img">' if img_grid_b64 else ""
-    img_yr_tag = f'<img src="{img_yr_b64}" class="chart-img">' if img_yr_b64 else ""
-    img_tm_tag = f'<img src="{img_tm_b64}" class="chart-img">' if img_tm_b64 else ""
+    img_res_tag = (
+        f'<img src="{img_res_b64}" class="chart-img">' if img_res_b64 else ""
+    )
+    img_grid_tag = (
+        f'<img src="{img_grid_b64}" class="chart-img">' if img_grid_b64 else ""
+    )
+    img_yr_tag = (
+        f'<img src="{img_yr_b64}" class="chart-img">' if img_yr_b64 else ""
+    )
+    img_tm_tag = (
+        f'<img src="{img_tm_b64}" class="chart-img">' if img_tm_b64 else ""
+    )
 
     html_content = f"""
     <!DOCTYPE html>
@@ -232,7 +270,7 @@ def generate_html_report(
             <h2>5. Residual Plot Model (2 Atas 2 Bawah)</h2>
             {img_res_tag}
             <div class="interpretation">
-                <strong>Interpretasi Otomatis Residual Plot:</strong><br>
+                <strong>Interpretasi Residual Plot:</strong><br>
                 • Sebaran di Sekitar Garis Nol (y = 0): Residual tersebar secara acak di sekitar garis merah horizontal, mengindikasikan estimasi tidak bias (unbiased).<br>
                 • Evaluasi Homoskedastisitas: Model dengan sebaran titik yang paling homogen dan rapat di sekitar garis nol (seperti Negative Binomial/Tweedie) menunjukkan penanganan keragaman varians yang lebih unggul dibanding Poisson.
             </div>
@@ -242,7 +280,7 @@ def generate_html_report(
             <h2>6. Plot Efek Parsial Parameter ({best_model_name})</h2>
             {img_grid_tag}
             <div class="interpretation">
-                <strong>Interpretasi Otomatis Efek Parsial Parameter:</strong><br>
+                <strong>InterpretasiEfek Parsial Parameter:</strong><br>
                 {partial_interp_html}
             </div>
 
@@ -365,8 +403,9 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is None:
     st.info(
-        "**Silakan unggah file Excel (.xlsx)** yang berisi data operasional penangkapan dan lingkungan"
-        " penangkapan untuk memulai proses analisis (minimal selama 5 tahun)."
+        "**Silakan unggah file Excel (.xlsx)** yang berisi data operasional"
+        " penangkapan dan lingkungan penangkapan untuk memulai proses analisis"
+        " (minimal selama 5 tahun)."
     )
 
     st.markdown(
@@ -500,41 +539,68 @@ if effort_col:
 df_model = df.dropna(subset=used_cols).copy()
 
 # EXPANDER DETEKSI & FILTER PENCILAN (OUTLIER DETECTION)
-with st.expander("🔍 Deteksi Pencilan & Nilai Ekstrem (Outlier Detection)", expanded=False):
-    st.caption("Pemeriksaan visual Boxplot dan filter statistik IQR untuk mencegah kesalahan input berat tangkapan/effort.")
-    
+with st.expander(
+    "🔍 Deteksi Pencilan & Nilai Ekstrem (Outlier Detection)", expanded=False
+):
+    st.caption(
+        "Pemeriksaan visual Boxplot dan filter statistik IQR untuk mencegah"
+        " kesalahan input berat tangkapan/effort."
+    )
+
     q1_target = df_model["berat_kg"].quantile(0.25)
     q3_target = df_model["berat_kg"].quantile(0.75)
     iqr_target = q3_target - q1_target
     lower_target = max(0.0, q1_target - 1.5 * iqr_target)
     upper_target = q3_target + 1.5 * iqr_target
-    
-    outliers_target = df_model[(df_model["berat_kg"] < lower_target) | (df_model["berat_kg"] > upper_target)]
-    
+
+    outliers_target = df_model[
+        (df_model["berat_kg"] < lower_target)
+        | (df_model["berat_kg"] > upper_target)
+    ]
+
     col_out1, col_plot_out = st.columns([1, 2])
     with col_out1:
-        st.metric("Pencilan Terdeteksi (berat_kg)", fmt_int(len(outliers_target)))
-        st.caption(f"Batas Wajar IQR: **{fmt_num(lower_target)}** kg s/d **{fmt_num(upper_target)}** kg")
-        filter_outliers = st.checkbox("❌ Filter / Keluarkan Data Pencilan Sebelum Pemodelan")
-    
+        st.metric(
+            "Pencilan Terdeteksi (berat_kg)", fmt_int(len(outliers_target))
+        )
+        st.caption(
+            f"Batas Wajar IQR: **{fmt_num(lower_target)}** kg s/d"
+            f" **{fmt_num(upper_target)}** kg"
+        )
+        filter_outliers = st.checkbox(
+            "❌ Filter / Keluarkan Data Pencilan Sebelum Pemodelan"
+        )
+
     with col_plot_out:
         fig_box, (ax_box1, ax_box2) = plt.subplots(1, 2, figsize=(8, 2.5))
         sns.boxplot(y=df_model["berat_kg"], ax=ax_box1, color="#0E4C92")
-        ax_box1.set_title("Boxplot berat_kg", fontsize=9, fontweight="bold")
-        
+        ax_box1.set_title(
+            "Boxplot berat_kg", fontsize=9, fontweight="bold"
+        )
+
         if effort_col:
-            sns.boxplot(y=df_model[effort_col], ax=ax_box2, color="#E67E22")
-            ax_box2.set_title(f"Boxplot {effort_col}", fontsize=9, fontweight="bold")
+            sns.boxplot(
+                y=df_model[effort_col], ax=ax_box2, color="#E67E22"
+            )
+            ax_box2.set_title(
+                f"Boxplot {effort_col}", fontsize=9, fontweight="bold"
+            )
         else:
             ax_box2.axis("off")
-        
+
         plt.tight_layout()
         st.pyplot(fig_box)
         plt.close(fig_box)
-    
+
     if filter_outliers:
-        df_model = df_model[(df_model["berat_kg"] >= lower_target) & (df_model["berat_kg"] <= upper_target)].copy()
-        st.success(f"Berhasil menyaring pencilan! Sampel tersisa: **{fmt_int(len(df_model))}** data.")
+        df_model = df_model[
+            (df_model["berat_kg"] >= lower_target)
+            & (df_model["berat_kg"] <= upper_target)
+        ].copy()
+        st.success(
+            "Berhasil menyaring pencilan! Sampel tersisa:"
+            f" **{fmt_int(len(df_model))}** data."
+        )
 
 # Menghitung Log Effort setelah pembersihan
 if effort_col:
@@ -626,8 +692,9 @@ with st.spinner("Sedang melatih model GLM & GAM..."):
 
 if not models:
     st.error(
-        "❌ Seluruh model gagal konvergen. Periksa kembali korelasi antar variabel"
-        " atau pastikan nilai variabel target tidak bernilai negatif/ekstrem."
+        "❌ Seluruh model gagal konvergen. Periksa kembali korelasi antar"
+        " variabel atau pastikan nilai variabel target tidak bernilai"
+        " negatif/ekstrem."
     )
     st.stop()
 
@@ -693,7 +760,9 @@ for col in valid_cats:
             "Min": "-",
             "Median": "-",
             "Max": "-",
-            "Keterangan / Modus": f"{fmt_int(s.nunique())} Kat. (Modus: {mode_val})",
+            "Keterangan / Modus": (
+                f"{fmt_int(s.nunique())} Kat. (Modus: {mode_val})"
+            ),
         })
 
 df_stat_summary = pd.DataFrame(stat_rows)
@@ -702,9 +771,9 @@ df_stat_summary = pd.DataFrame(stat_rows)
 # 5. DASHBOARD & HASIL ANALISIS (TAB INTEGRASI)
 # =========================================================
 st.caption(
-    f"**Status Analisis:** Berhasil memproses **{fmt_int(len(df_model))}** observasi"
-    f" trip. Prediktor aktif: **{fmt_int(len(valid_cats))}** Kategorikal,"
-    f" **{fmt_int(len(valid_nums))}** Numerik."
+    f"**Status Analisis:** Berhasil memproses **{fmt_int(len(df_model))}**"
+    f" observasi trip. Prediktor aktif: **{fmt_int(len(valid_cats))}**"
+    f" Kategorikal, **{fmt_int(len(valid_nums))}** Numerik."
 )
 
 tab0, tab1, tab2, tab3 = st.tabs(
@@ -726,7 +795,9 @@ with tab0:
     st.subheader("Ringkasan Statistik Deskriptif Variabel")
     col_stat, _ = st.columns([4, 1])
     with col_stat:
-        st.dataframe(df_stat_summary, use_container_width=True, hide_index=True)
+        st.dataframe(
+            df_stat_summary, use_container_width=True, hide_index=True
+        )
 
     st.markdown("---")
     st.subheader("Visualisasi Sebaran Data (Boxplot)")
@@ -736,19 +807,33 @@ with tab0:
     if "tahun" in df_model.columns:
         fig_bkg, (ax_bkg1, ax_bkg2) = plt.subplots(1, 2, figsize=(12, 4))
         sns.boxplot(y=df_model["berat_kg"], ax=ax_bkg1, color="#0E4C92")
-        ax_bkg1.set_title("Boxplot Berat Ikan (seluruh data)", fontsize=10, fontweight="bold")
+        ax_bkg1.set_title(
+            "Boxplot Berat Ikan (seluruh data)", fontsize=10, fontweight="bold"
+        )
         ax_bkg1.set_ylabel("Berat (kg)")
 
         # Urutkan kategori tahun jika numerik/teks
         df_sort_yr = df_model.copy()
-        df_sort_yr["tahun_sort"] = pd.to_numeric(df_sort_yr["tahun"], errors="ignore")
-        df_sort_yr = df_sort_yr.sort_values("tahun_sort")
+        df_sort_yr["tahun_sort"] = pd.to_numeric(
+            df_sort_yr["tahun"], errors="coerce"
+        )
+        df_sort_yr = df_sort_yr.sort_values("tahun_sort", na_position="last")
 
-        sns.boxplot(x="tahun", y="berat_kg", data=df_sort_yr, ax=ax_bkg2, palette="Blues")
-        ax_bkg2.set_title("Boxplot Berat Ikan (Per Tahun)", fontsize=10, fontweight="bold")
+        sns.boxplot(
+            x="tahun",
+            y="berat_kg",
+            data=df_sort_yr,
+            ax=ax_bkg2,
+            palette="Blues",
+        )
+        ax_bkg2.set_title(
+            "Boxplot Berat Ikan (Per Tahun)", fontsize=10, fontweight="bold"
+        )
         ax_bkg2.set_xlabel("Tahun")
         ax_bkg2.set_ylabel("Berat (kg)")
-        ax_bkg2.set_xticklabels(ax_bkg2.get_xticklabels(), rotation=30, ha="right")
+        ax_bkg2.set_xticklabels(
+            ax_bkg2.get_xticklabels(), rotation=30, ha="right"
+        )
     else:
         fig_bkg, ax_bkg1 = plt.subplots(figsize=(6, 4))
         sns.boxplot(y=df_model["berat_kg"], ax=ax_bkg1, color="#0E4C92")
@@ -766,9 +851,13 @@ with tab0:
         n_other = len(other_nums)
         cols_per_row = 3
         rows_other = int(np.ceil(n_other / cols_per_row))
-        
-        fig_num_box, axes_num_box = plt.subplots(rows_other, cols_per_row, figsize=(14, 3.5 * rows_other))
-        axes_num_flat = axes_num_box.flatten() if n_other > 1 else [axes_num_box]
+
+        fig_num_box, axes_num_box = plt.subplots(
+            rows_other, cols_per_row, figsize=(14, 3.5 * rows_other)
+        )
+        axes_num_flat = (
+            axes_num_box.flatten() if n_other > 1 else [axes_num_box]
+        )
 
         for idx_n, col_n in enumerate(other_nums):
             ax_n = axes_num_flat[idx_n]
@@ -802,10 +891,16 @@ with tab0:
 
     p_val_str = f"{p_val:.4e}".replace(".", ",")
     if p_val < 0.05:
-        norm_kesimpulan = "Data `berat_kg` tidak terdistribusi normal (p-value < 0,05). Kondisi ini wajar untuk data perikanan dan mendukung penggunaan GLM/GAM (Poisson, Negative Binomial, Tweedie)."
+        norm_kesimpulan = (
+            "Data `berat_kg` tidak terdistribusi normal (p-value < 0,05)."
+            " Kondisi ini wajar untuk data perikanan dan mendukung penggunaan"
+            " GLM/GAM (Poisson, Negative Binomial, Tweedie)."
+        )
         st.info(f"**Kesimpulan Normalitas:** {norm_kesimpulan}")
     else:
-        norm_kesimpulan = "Data `berat_kg` terdistribusi normal (p-value >= 0,05)."
+        norm_kesimpulan = (
+            "Data `berat_kg` terdistribusi normal (p-value >= 0,05)."
+        )
         st.info(f"**Kesimpulan Normalitas:** {norm_kesimpulan}")
 
     norm_info = {
@@ -818,7 +913,9 @@ with tab0:
     fig_norm, (ax_dens, ax_qq) = plt.subplots(1, 2, figsize=(12, 4.5))
 
     # Plot Densitas
-    sns.histplot(target_data, kde=True, ax=ax_dens, color="#0E4C92", stat="density")
+    sns.histplot(
+        target_data, kde=True, ax=ax_dens, color="#0E4C92", stat="density"
+    )
     ax_dens.set_title("Plot Densitas (berat_kg)", fontweight="bold")
     ax_dens.set_xlabel("berat_kg")
     ax_dens.set_ylabel("Density")
@@ -838,7 +935,10 @@ with tab0:
 
     # 3. UJI HETEROGENITAS VARIANS
     st.subheader("2. Uji Heterogenitas Varians (Levene's Test)")
-    st.caption("Menguji kesamaan varians `berat_kg` terhadap setiap variabel kategorikal independen.")
+    st.caption(
+        "Menguji kesamaan varians `berat_kg` terhadap setiap variabel"
+        " kategorikal independen."
+    )
 
     het_results = []
     for cat in valid_cats:
@@ -867,7 +967,9 @@ with tab0:
         with col_het:
             st.dataframe(df_het, use_container_width=False, hide_index=True)
     else:
-        st.warning("Tidak ada variabel kategorikal valid untuk diuji heterogenitasnya.")
+        st.warning(
+            "Tidak ada variabel kategorikal valid untuk diuji heterogenitasnya."
+        )
 
     st.markdown("---")
 
@@ -890,7 +992,11 @@ with tab0:
                     "Keterangan Multikolinearitas": (
                         "Tinggi (VIF > 10)"
                         if vif_val > 10
-                        else ("Sedang (VIF 5–10)" if vif_val > 5 else "Rendah / Bebas (VIF < 5)")
+                        else (
+                            "Sedang (VIF 5–10)"
+                            if vif_val > 5
+                            else "Rendah / Bebas (VIF < 5)"
+                        )
                     ),
                 })
 
@@ -913,16 +1019,28 @@ with tab1:
 
     st.markdown("**Tabel Perbandingan Kinerja Model (Sorted by AIC)**")
     metrics_display = metrics_df.copy()
-    metrics_display["AIC"] = metrics_display["AIC"].apply(lambda x: fmt_num(x, 2))
-    metrics_display["Deviance"] = metrics_display["Deviance"].apply(lambda x: fmt_num(x, 2))
-    metrics_display["Null_Deviance"] = metrics_display["Null_Deviance"].apply(lambda x: fmt_num(x, 2))
-    metrics_display["Pseudo_R2"] = metrics_display["Pseudo_R2"].apply(lambda x: fmt_num(x, 4))
-    metrics_display["Delta_AIC"] = metrics_display["Delta_AIC"].apply(lambda x: fmt_num(x, 2))
+    metrics_display["AIC"] = metrics_display["AIC"].apply(
+        lambda x: fmt_num(x, 2)
+    )
+    metrics_display["Deviance"] = metrics_display["Deviance"].apply(
+        lambda x: fmt_num(x, 2)
+    )
+    metrics_display["Null_Deviance"] = metrics_display["Null_Deviance"].apply(
+        lambda x: fmt_num(x, 2)
+    )
+    metrics_display["Pseudo_R2"] = metrics_display["Pseudo_R2"].apply(
+        lambda x: fmt_num(x, 4)
+    )
+    metrics_display["Delta_AIC"] = metrics_display["Delta_AIC"].apply(
+        lambda x: fmt_num(x, 2)
+    )
     metrics_display["N"] = metrics_display["N"].apply(fmt_int)
 
     col_tbl, _ = st.columns([4, 1])
     with col_tbl:
-        st.dataframe(metrics_display, use_container_width=True, hide_index=True)
+        st.dataframe(
+            metrics_display, use_container_width=True, hide_index=True
+        )
 
     st.markdown("""
     **Panduan Penjelasan Indikator Kinerja Model:**
@@ -936,8 +1054,10 @@ with tab1:
 
     st.info(
         f"Model **{best_model_name}** dipilih sebagai model terbaik "
-        f"karena memiliki nilai **AIC terendah** (ΔAIC = 0,00) dan daya penjelas (Pseudo R²) yang optimal. "
-        f"Model ini berhasil meminimalkan penyimpangan data (*deviance*) tanpa mengalami kompleksitas berlebih (*overfitting*)."
+        "karena memiliki nilai **AIC terendah** (ΔAIC = 0,00) dan daya penjelas"
+        " (Pseudo R²) yang optimal. Model ini berhasil meminimalkan"
+        " penyimpangan data (*deviance*) tanpa mengalami kompleksitas berlebih"
+        " (*overfitting*)."
     )
 
     st.markdown("---")
@@ -966,7 +1086,9 @@ with tab1:
     df_disp_table = pd.DataFrame(disp_rows)
     col_disp, _ = st.columns([3.5, 1])
     with col_disp:
-        st.dataframe(df_disp_table, use_container_width=False, hide_index=True)
+        st.dataframe(
+            df_disp_table, use_container_width=False, hide_index=True
+        )
 
     st.markdown("""
     **Panduan Penjelasan Indikator Evaluasi Dispersi Varians:**
@@ -990,7 +1112,11 @@ with tab1:
         if idx >= 4:
             break
         axes_list[idx].scatter(
-            mod.fittedvalues, mod.resid_response, alpha=0.3, s=12, color="#0E4C92"
+            mod.fittedvalues,
+            mod.resid_response,
+            alpha=0.3,
+            s=12,
+            color="#0E4C92",
         )
         axes_list[idx].axhline(y=0, linestyle="--", linewidth=1, color="red")
         axes_list[idx].set_title(
@@ -1007,9 +1133,14 @@ with tab1:
     st.pyplot(fig_res)
 
     st.info(
-        "**Interpretasi Residual Plot:**\n\n"
-        "• **Sebaran di Sekitar Garis Nol (y = 0):** Residual yang tersebar secara acak dan seimbang di sekitar garis merah horizontal menunjukkan estimasi model tidak bias (unbiased).\n"
-        f"**Kinerja Model Terpilih ({best_model_name}):** Memiliki sebaran residual yang paling terdistribusi rata dan homogen di sekitar garis nol dibanding GLM Poisson. Hal ini mengindikasikan variabilitas data hasil tangkapan berhasil ditangkap secara tepat tanpa gejala pola kurva tersisa (heteroskedastisitas)."
+        "**Interpretasi Residual Plot:**\n\n• **Sebaran di Sekitar Garis Nol (y ="
+        " 0):** Residual yang tersebar secara acak dan seimbang di sekitar"
+        " garis merah horizontal menunjukkan estimasi model tidak bias"
+        f" (unbiased).\n**Kinerja Model Terpilih ({best_model_name}):** Memiliki"
+        " sebaran residual yang paling terdistribusi rata dan homogen di"
+        " sekitar garis nol dibanding GLM Poisson. Hal ini mengindikasikan"
+        " variabilitas data hasil tangkapan berhasil ditangkap secara tepat"
+        " tanpa gejala pola kurva tersisa (heteroskedastisitas)."
     )
 
 # --- TAB 2: EFEK PARSIAL DINAMIS ---
@@ -1071,7 +1202,9 @@ with tab2:
     # Plot & Analisis Dinamis Numerik
     for col_name in valid_nums:
         ax = axes_flat[plot_idx]
-        grid = np.linspace(df_model[col_name].min(), df_model[col_name].max(), 150)
+        grid = np.linspace(
+            df_model[col_name].min(), df_model[col_name].max(), 150
+        )
         pred = model_tab2.get_prediction(make_dummy(col_name, grid))
         fit = pred.predicted_mean - pred.predicted_mean.mean()
         se = pred.se_mean
@@ -1090,12 +1223,20 @@ with tab2:
         ax.set_ylabel("Partial effect", fontsize=8)
         plot_idx += 1
 
-        v_label = var_label_map.get(col_name, col_name.replace("_", " ").title())
+        v_label = var_label_map.get(
+            col_name, col_name.replace("_", " ").title()
+        )
         delta_eff = fit[-1] - fit[0]
         if delta_eff > 0:
-            desc = f"Peningkatan nilai {v_label.lower()} mendorong peningkatan pada tingkat hasil tangkapan CPUE."
+            desc = (
+                f"Peningkatan nilai {v_label.lower()} mendorong peningkatan"
+                " pada tingkat hasil tangkapan CPUE."
+            )
         else:
-            desc = f"Peningkatan nilai {v_label.lower()} berhubungan dengan penurunan tingkat hasil tangkapan CPUE."
+            desc = (
+                f"Peningkatan nilai {v_label.lower()} berhubungan dengan"
+                " penurunan tingkat hasil tangkapan CPUE."
+            )
 
         partial_interp_list.append(f"• {v_label}: {desc}")
 
@@ -1103,9 +1244,10 @@ with tab2:
     for cat_col in valid_cats:
         ax = axes_flat[plot_idx]
 
+        # DIPERBAIKI: Pengurutan Kategori Aman untuk Teks & Angka
         uniques = sorted(
             df_model[cat_col].dropna().unique(),
-            key=lambda x: int(x) if str(x).isdigit() else x,
+            key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
         )
 
         if len(uniques) > 12:
@@ -1139,13 +1281,26 @@ with tab2:
         ax.set_title(f"Effect: {cat_col}", fontsize=10, fontweight="bold")
         plot_idx += 1
 
-        v_label = var_label_map.get(cat_col, cat_col.replace("_", " ").title())
+        v_label = var_label_map.get(
+            cat_col, cat_col.replace("_", " ").title()
+        )
         max_i = int(np.argmax(fit))
         min_i = int(np.argmin(fit))
-        max_c = month_map.get(str(uniques[max_i]), str(uniques[max_i])) if cat_col == "bulan" else str(uniques[max_i])
-        min_c = month_map.get(str(uniques[min_i]), str(uniques[min_i])) if cat_col == "bulan" else str(uniques[min_i])
+        max_c = (
+            month_map.get(str(uniques[max_i]), str(uniques[max_i]))
+            if cat_col == "bulan"
+            else str(uniques[max_i])
+        )
+        min_c = (
+            month_map.get(str(uniques[min_i]), str(uniques[min_i]))
+            if cat_col == "bulan"
+            else str(uniques[min_i])
+        )
 
-        desc = f"Tingkat hasil tangkapan paling tinggi ditemukan pada kelompok {max_c}, sedangkan yang terendah tercatat pada kelompok {min_c}."
+        desc = (
+            f"Tingkat hasil tangkapan paling tinggi ditemukan pada"
+            f" {max_c}, sedangkan yang terendah tercatat pada {min_c}."
+        )
         partial_interp_list.append(f"• {v_label}: {desc}")
 
     for i in range(plot_idx, len(axes_flat)):
@@ -1181,9 +1336,10 @@ with tab3:
 
     # 1. Standarisasi Tahunan (Jika Kolom 'tahun' Ada)
     if "tahun" in valid_cats:
+        # DIPERBAIKI: Pengurutan Tahun Aman untuk Teks & Angka
         years = sorted(
             df_model["tahun"].unique(),
-            key=lambda x: int(x) if str(x).isdigit() else x,
+            key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
         )
         grid_yr_dict = {c: [defaults[c]] * len(years) for c in defaults}
         grid_yr_dict["tahun"] = years
@@ -1197,10 +1353,18 @@ with tab3:
         grid_yr["Lower CI"] = pred_yr["mean_ci_lower"]
         grid_yr["Upper CI"] = pred_yr["mean_ci_upper"]
 
-        grid_yr_display = grid_yr[["tahun", "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]].copy()
-        grid_yr_display["CPUE_std (kg/hari)"] = grid_yr_display["CPUE_std (kg/hari)"].apply(lambda x: fmt_num(x, 2))
-        grid_yr_display["Lower CI"] = grid_yr_display["Lower CI"].apply(lambda x: fmt_num(x, 2))
-        grid_yr_display["Upper CI"] = grid_yr_display["Upper CI"].apply(lambda x: fmt_num(x, 2))
+        grid_yr_display = grid_yr[
+            ["tahun", "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]
+        ].copy()
+        grid_yr_display["CPUE_std (kg/hari)"] = grid_yr_display[
+            "CPUE_std (kg/hari)"
+        ].apply(lambda x: fmt_num(x, 2))
+        grid_yr_display["Lower CI"] = grid_yr_display["Lower CI"].apply(
+            lambda x: fmt_num(x, 2)
+        )
+        grid_yr_display["Upper CI"] = grid_yr_display["Upper CI"].apply(
+            lambda x: fmt_num(x, 2)
+        )
 
         col_t1, col_t2 = st.columns([1, 1.5])
         with col_t1:
@@ -1233,7 +1397,9 @@ with tab3:
                     alpha=0.18,
                     edgecolor="none",
                 )
-                ax_yr.plot(x_smooth, spl_m(x_smooth), color="#E67E22", linewidth=1.5)
+                ax_yr.plot(
+                    x_smooth, spl_m(x_smooth), color="#E67E22", linewidth=1.5
+                )
                 ax_yr.scatter(
                     x_raw,
                     grid_yr["CPUE_std (kg/hari)"],
@@ -1273,9 +1439,10 @@ with tab3:
         (c for c in ["bulan", "musim", "quarter"] if c in valid_cats), None
     )
     if time_cat:
+        # DIPERBAIKI: Pengurutan Unit Waktu Aman untuk Teks & Angka
         time_units = sorted(
             df_model[time_cat].unique(),
-            key=lambda x: int(x) if str(x).isdigit() else x,
+            key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
         )
 
         grid_tm_dict = {c: [defaults[c]] * len(time_units) for c in defaults}
@@ -1300,10 +1467,18 @@ with tab3:
             grid_tm_display = grid_tm.copy()
             x_labels = [str(t) for t in time_units]
 
-        grid_tm_table = grid_tm_display[[time_cat, "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]].copy()
-        grid_tm_table["CPUE_std (kg/hari)"] = grid_tm_table["CPUE_std (kg/hari)"].apply(lambda x: fmt_num(x, 2))
-        grid_tm_table["Lower CI"] = grid_tm_table["Lower CI"].apply(lambda x: fmt_num(x, 2))
-        grid_tm_table["Upper CI"] = grid_tm_table["Upper CI"].apply(lambda x: fmt_num(x, 2))
+        grid_tm_table = grid_tm_display[
+            [time_cat, "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]
+        ].copy()
+        grid_tm_table["CPUE_std (kg/hari)"] = grid_tm_table[
+            "CPUE_std (kg/hari)"
+        ].apply(lambda x: fmt_num(x, 2))
+        grid_tm_table["Lower CI"] = grid_tm_table["Lower CI"].apply(
+            lambda x: fmt_num(x, 2)
+        )
+        grid_tm_table["Upper CI"] = grid_tm_table["Upper CI"].apply(
+            lambda x: fmt_num(x, 2)
+        )
 
         col_b1, col_b2 = st.columns([1, 1.5])
         with col_b1:
@@ -1336,7 +1511,9 @@ with tab3:
                     alpha=0.18,
                     edgecolor="none",
                 )
-                ax_mo.plot(x_smooth, spl_m(x_smooth), color="#E67E22", linewidth=1.5)
+                ax_mo.plot(
+                    x_smooth, spl_m(x_smooth), color="#E67E22", linewidth=1.5
+                )
                 ax_mo.scatter(
                     x_raw,
                     grid_tm["CPUE_std (kg/hari)"],
@@ -1424,7 +1601,9 @@ with tab3:
             label="Download Hasil Standarisasi CPUE (Excel)",
             data=output.getvalue(),
             file_name="Hasil_Standarisasi_CPUE_YFT.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            mime=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
         )
     with col_down2:
         st.download_button(
