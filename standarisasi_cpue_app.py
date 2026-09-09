@@ -267,7 +267,7 @@ def generate_html_report(
             <h2>4. Evaluasi Dispersi Varians Seluruh Model</h2>
             {df_disp_table.to_html(index=False)}
             
-            <h2>5. Residual Plot Model (2 Atas 2 Bawah)</h2>
+            <h2>5. Residual Plot Model</h2>
             {img_res_tag}
             <div class="interpretation">
                 <strong>Interpretasi Residual Plot:</strong><br>
@@ -1104,7 +1104,7 @@ with tab1:
     st.markdown("---")
     st.subheader("Residual Plot Model")
 
-    # GRID SUBPLOT RESIDUAL DIBUAT EXACT 2 ATAS 2 BAWAH (2 x 2)
+    # GRID SUBPLOT RESIDUAL DIBUAT EXACT
     fig_res, axes = plt.subplots(2, 2, figsize=(12, 8))
     axes_list = axes.flatten()
 
