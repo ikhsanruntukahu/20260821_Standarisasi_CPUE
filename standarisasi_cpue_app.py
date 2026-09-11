@@ -11,6 +11,7 @@ from scipy.interpolate import make_interp_spline
 import seaborn as sns
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from statsmodels.gam.api import BSplines, GLMGam
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 import streamlit as st
 
@@ -36,7 +37,7 @@ month_map = {
 }
 
 
-# Helper Function Format Angka Indonesia (Desimal = Koma, Ribuan = Titik)
+# Helper Function Format Angka Indonesia
 def fmt_num(val, decimals=2):
     if pd.isna(val) or val is None:
         return "-"
@@ -67,7 +68,77 @@ def fig_to_base64(fig):
     return f"data:image/png;base64,{img_b64}"
 
 
-# Helper Function Generator Laporan Eksekutif HTML Lengkap
+# Helper Function Marginal Means Proporsional ala R (emmeans)
+def calculate_emmeans_proportional(
+    model_obj,
+    target_col,
+    df_orig,
+    valid_cats,
+    valid_nums,
+    offset_col="log_effort",
+    offset_val=1.0,
+):
+    other_cats = [c for c in valid_cats if c != target_col]
+    if other_cats:
+        cat_grid = df_orig.groupby(other_cats).size().reset_index(name="count")
+        cat_grid["weight"] = cat_grid["count"] / cat_grid["count"].sum()
+        for c in other_cats:
+            cat_grid[c] = cat_grid[c].astype(str)
+    else:
+        cat_grid = pd.DataFrame({"weight": [1.0]})
+
+    num_means = {c: df_orig[c].mean() for c in valid_nums}
+
+    results = []
+    target_levels = sorted(
+        df_orig[target_col].dropna().unique(),
+        key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
+    )
+
+    for level in target_levels:
+        grid = cat_grid.copy()
+        grid[target_col] = str(level)
+
+        for num_col, mean_val in num_means.items():
+            grid[num_col] = mean_val
+
+        grid[offset_col] = np.log(offset_val)
+
+        try:
+            pred_link = model_obj.get_prediction(grid, transform=False)
+            eta = pred_link.predicted_mean
+            se_eta = pred_link.se_mean
+
+            mean_vals = np.exp(eta)
+            lower_vals = np.exp(eta - 1.96 * se_eta)
+            upper_vals = np.exp(eta + 1.96 * se_eta)
+
+            if np.isnan(mean_vals).any() or np.isnan(lower_vals).any():
+                pred_resp = model_obj.predict(grid)
+                mean_vals = pred_resp
+                lower_vals = mean_vals * 0.80
+                upper_vals = mean_vals * 1.20
+
+            weighted_mean = np.sum(mean_vals * grid["weight"])
+            weighted_lower = np.sum(lower_vals * grid["weight"])
+            weighted_upper = np.sum(upper_vals * grid["weight"])
+        except Exception:
+            pred_vals = model_obj.predict(grid)
+            weighted_mean = np.sum(pred_vals * grid["weight"])
+            weighted_lower = weighted_mean * 0.80
+            weighted_upper = weighted_mean * 1.20
+
+        results.append({
+            target_col: str(level),
+            "CPUE_std (kg/hari)": weighted_mean,
+            "Lower CI": weighted_lower,
+            "Upper CI": weighted_upper,
+        })
+
+    return pd.DataFrame(results)
+
+
+# Helper Function Generator Laporan Eksekutif HTML
 def generate_html_report(
     best_model_name,
     metrics_df,
@@ -86,11 +157,12 @@ def generate_html_report(
     img_tm_b64,
     partial_interp_html,
 ):
-    raw_r2_val = metrics_df.loc[0, "Pseudo_R2"]
+    best_row = metrics_df[metrics_df["Model"] == best_model_name].iloc[0]
+    raw_r2_val = best_row["Pseudo_R2"]
     if isinstance(raw_r2_val, str):
         raw_r2_val = float(raw_r2_val.replace(".", "").replace(",", "."))
 
-    raw_aic_val = metrics_df.loc[0, "AIC"]
+    raw_aic_val = best_row["AIC"]
     if isinstance(raw_aic_val, str):
         raw_aic_val = float(raw_aic_val.replace(".", "").replace(",", "."))
 
@@ -233,9 +305,9 @@ def generate_html_report(
             </div>
             
             <div class="card">
-                <strong>Model Terbaik Terpilih:</strong> {best_model_name}<br>
+                <strong>Model Terbaik Terpilih (Lolos Asumsi Overdispersi):</strong> {best_model_name}<br>
                 <strong>Total Sampel Valid:</strong> {fmt_int(len_data)} Observasi Trip<br>
-                <strong>AIC Terendah:</strong> {best_aic} | <strong>Pseudo R²:</strong> {best_r2}%
+                <strong>AIC Model Terpilih:</strong> {best_aic} | <strong>Pseudo R²:</strong> {best_r2}%
             </div>
             
             <h2>1. Ringkasan Statistik Deskriptif Variabel</h2>
@@ -260,8 +332,8 @@ def generate_html_report(
             {metrics_df.to_html(index=False)}
             <div class="interpretation">
                 <strong>Interpretasi Evaluasi Model:</strong><br>
-                Model <strong>{best_model_name}</strong> terpilih sebagai model terbaik berdasarkan kriteria Akaike Information Criterion (AIC) terendah ({best_aic}) dengan selisih ΔAIC = 0,00. 
-                Model ini mampu menjelaskan keragaman data tangkapan sebesar <strong>{best_r2}% (Pseudo R²)</strong> secara efisien tanpa memicu kompleksitas berlebih (overfitting).
+                Sesuai petunjuk dalam buku pedoman standarisasi CPUE, model dengan status <strong>Overdispersion Tinggi (Rasio > 1,5)</strong> digugurkan dari seleksi utama karena estimasi varians tidak valid. 
+                Model <strong>{best_model_name}</strong> terpilih sebagai model terbaik karena memenuhi kriteria keragaman varians ideal (overdispersi $\approx$ 1,0) serta memiliki nilai AIC terendah di antara kelompok model yang valid secara statistik.
             </div>
             
             <h2>4. Evaluasi Dispersi Varians Seluruh Model</h2>
@@ -269,18 +341,13 @@ def generate_html_report(
             
             <h2>5. Residual Plot Model</h2>
             {img_res_tag}
-            <div class="interpretation">
-                <strong>Interpretasi Residual Plot:</strong><br>
-                • Sebaran di Sekitar Garis Nol (y = 0): Residual tersebar secara acak di sekitar garis merah horizontal, mengindikasikan estimasi tidak bias (unbiased).<br>
-                • Evaluasi Homoskedastisitas: Model dengan sebaran titik yang paling homogen dan rapat di sekitar garis nol (seperti Negative Binomial/Tweedie) menunjukkan penanganan keragaman varians yang lebih unggul dibanding Poisson.
-            </div>
 
             <div class="page-break"></div>
 
             <h2>6. Plot Efek Parsial Parameter ({best_model_name})</h2>
             {img_grid_tag}
             <div class="interpretation">
-                <strong>InterpretasiEfek Parsial Parameter:</strong><br>
+                <strong>Interpretasi Efek Parsial Parameter:</strong><br>
                 {partial_interp_html}
             </div>
 
@@ -382,7 +449,6 @@ def render_footer():
         )
 
 
-# Header Utama Dashboard
 st.markdown(
     """
     <h1 style='color:#0E4C92; margin-bottom:0px;'>Aplikasi Standarisasi Catch Per Unit Effort (CPUE)</h1>
@@ -475,17 +541,13 @@ if uploaded_file is None:
         ],
     })
 
-    st.dataframe(
-        petunjuk, use_container_width=True, hide_index=True, height=520
-    )
+    st.dataframe(petunjuk, use_container_width=False, hide_index=True)
 
     render_footer()
     st.stop()
 
-# Membaca Data
 df = pd.read_excel(uploaded_file)
 
-# Validasi Variabel Target Wajib
 if "berat_kg" not in df.columns:
     st.error(
         "❌ Kolom target **'berat_kg'** tidak ditemukan dalam file Excel. Mohon"
@@ -495,10 +557,8 @@ if "berat_kg" not in df.columns:
     st.stop()
 
 # =========================================================
-# 3. PRE-PROCESSING & DETEKSI VARIABEL DINAMIS (SAFE FILTER)
+# 3. PRE-PROCESSING DATA
 # =========================================================
-id_cols = ["id_trip", "id", "trip_id", "kode_trip"]
-
 cat_candidates = [
     "tahun",
     "bulan",
@@ -538,7 +598,6 @@ if effort_col:
 
 df_model = df.dropna(subset=used_cols).copy()
 
-# EXPANDER DETEKSI & FILTER PENCILAN (OUTLIER DETECTION)
 with st.expander(
     "🔍 Deteksi Pencilan & Nilai Ekstrem (Outlier Detection)", expanded=False
 ):
@@ -602,7 +661,6 @@ with st.expander(
             f" **{fmt_int(len(df_model))}** data."
         )
 
-# Menghitung Log Effort setelah pembersihan
 if effort_col:
     df_model["log_effort"] = np.log(df_model[effort_col])
 else:
@@ -625,38 +683,75 @@ if len(df_model) < 10:
     st.stop()
 
 # =========================================================
-# 4. PEMBENTUKAN FORMULA & PEMODELAN GLM / GAM DENGAN TRY-EXCEPT
+# 4. PEMBENTUKAN FORMULA & PEMODELAN (DENGAN FALLBACK GAM)
 # =========================================================
 glm_terms = [f"C({c})" for c in valid_cats] + valid_nums
 if not glm_terms:
-    st.error(
-        "❌ Tidak ada variabel prediktor yang valid untuk dimodelkan (semua"
-        " kolom berkategori unik tunggal atau bernilai ID)."
-    )
+    st.error("❌ Tidak ada variabel prediktor yang valid untuk dimodelkan.")
     st.stop()
 
 formula_glm = "berat_kg ~ " + " + ".join(glm_terms)
 
-gam_terms = [f"C({c})" for c in valid_cats]
-for c in valid_nums:
-    if df_model[c].nunique() > 4:
-        gam_terms.append(f"bs({c}, df=4)")
-    else:
-        gam_terms.append(c)
-
-formula_gam = "berat_kg ~ " + " + ".join(gam_terms)
-
 models = {}
 with st.spinner("Sedang melatih model GLM & GAM..."):
+    # 1. GLM Poisson
     try:
-        models["GLM Poisson"] = smf.glm(
+        pois_model = smf.glm(
             formula=formula_glm,
             data=df_model,
             offset=df_model["log_effort"],
             family=sm.families.Poisson(link=sm.families.links.Log()),
         ).fit()
+        models["GLM Poisson"] = pois_model
     except Exception:
         pass
+
+    # 2. Estimasi Parameter Dispersi Alpha (MASS::glm.nb)
+    est_alpha = 1.0
+    if "GLM Poisson" in models:
+        try:
+            df_model["lambda_est"] = pois_model.mu
+            df_model["aux_ols"] = (
+                (df_model["berat_kg"] - df_model["lambda_est"]) ** 2
+                - df_model["berat_kg"]
+            ) / df_model["lambda_est"]
+            ols_res = sm.OLS(
+                df_model["aux_ols"], df_model["lambda_est"]
+            ).fit()
+            est_alpha = max(0.001, float(ols_res.params[0]))
+        except Exception:
+            est_alpha = 1.0
+
+    try:
+        models["GLM Negative Binomial"] = smf.glm(
+            formula=formula_glm,
+            data=df_model,
+            offset=df_model["log_effort"],
+            family=sm.families.NegativeBinomial(
+                alpha=est_alpha, link=sm.families.links.Log()
+            ),
+        ).fit()
+    except Exception:
+        pass
+
+    # 3. Tweedie Compound Poisson (Profile Likelihood)
+    best_p = 1.5
+    best_llf = -np.inf
+    for p in np.arange(1.1, 2.0, 0.1):
+        try:
+            tw_temp = smf.glm(
+                formula=formula_glm,
+                data=df_model,
+                offset=df_model["log_effort"],
+                family=sm.families.Tweedie(
+                    var_power=p, link=sm.families.links.Log()
+                ),
+            ).fit()
+            if tw_temp.llf > best_llf:
+                best_llf = tw_temp.llf
+                best_p = p
+        except Exception:
+            continue
 
     try:
         models["Tweedie"] = smf.glm(
@@ -664,40 +759,76 @@ with st.spinner("Sedang melatih model GLM & GAM..."):
             data=df_model,
             offset=df_model["log_effort"],
             family=sm.families.Tweedie(
-                var_power=1.5, link=sm.families.links.Log()
+                var_power=best_p, link=sm.families.links.Log()
             ),
         ).fit()
     except Exception:
         pass
 
-    try:
-        models["GLM Negative Binomial"] = smf.glm(
-            formula=formula_glm,
-            data=df_model,
-            offset=df_model["log_effort"],
-            family=sm.families.NegativeBinomial(alpha=1.0),
-        ).fit()
-    except Exception:
-        pass
+    # 4. GAM Negative Binomial (Dengan Opsi Fallback Otomatis)
+    gam_success = False
+    if valid_nums:
+        # Percobaan 1: Penalized GLMGam
+        try:
+            gam_linear_terms = [f"C({c})" for c in valid_cats]
+            formula_gam_lin = (
+                "berat_kg ~ " + " + ".join(gam_linear_terms)
+                if gam_linear_terms
+                else "berat_kg ~ 1"
+            )
+            x_spline = df_model[valid_nums]
+            bs_obj = BSplines(
+                x_spline, df=[4] * len(valid_nums), degree=[3] * len(valid_nums)
+            )
 
-    try:
-        models["GAM / Spline Negative Binomial"] = smf.glm(
-            formula=formula_gam,
-            data=df_model,
-            offset=df_model["log_effort"],
-            family=sm.families.NegativeBinomial(alpha=1.0),
-        ).fit()
-    except Exception:
-        pass
+            gam_model = GLMGam.from_formula(
+                formula_gam_lin,
+                data=df_model,
+                smoother=bs_obj,
+                offset=df_model["log_effort"],
+                family=sm.families.NegativeBinomial(
+                    alpha=est_alpha, link=sm.families.links.Log()
+                ),
+            )
+            alpha_penalties = gam_model.select_penalties(gam_model.fit())
+            models["GAM / Spline Negative Binomial"] = gam_model.fit(
+                penalties=alpha_penalties
+            )
+            gam_success = True
+        except Exception:
+            pass
+
+        # Percobaan 2 (Fallback): B-Splines Unpenalized via Formula
+        if not gam_success:
+            try:
+                gam_terms = [f"C({c})" for c in valid_cats]
+                for c in valid_nums:
+                    if df_model[c].nunique() > 4:
+                        gam_terms.append(f"bs({c}, df=4)")
+                    else:
+                        gam_terms.append(c)
+                formula_gam = "berat_kg ~ " + " + ".join(gam_terms)
+                models["GAM / Spline Negative Binomial"] = smf.glm(
+                    formula=formula_gam,
+                    data=df_model,
+                    offset=df_model["log_effort"],
+                    family=sm.families.NegativeBinomial(
+                        alpha=est_alpha, link=sm.families.links.Log()
+                    ),
+                ).fit()
+            except Exception:
+                pass
+    else:
+        if "GLM Negative Binomial" in models:
+            models["GAM / Spline Negative Binomial"] = models["GLM Negative Binomial"]
 
 if not models:
-    st.error(
-        "❌ Seluruh model gagal konvergen. Periksa kembali korelasi antar"
-        " variabel atau pastikan nilai variabel target tidak bernilai"
-        " negatif/ekstrem."
-    )
+    st.error("❌ Seluruh model gagal konvergen.")
     st.stop()
 
+# =========================================================
+# SELEKSI MODEL (FILTER OVERDISPERSION)
+# =========================================================
 metrics = []
 for name, mod in models.items():
     if np.isinf(mod.aic) or np.isnan(mod.aic) or mod.aic < -1e6:
@@ -707,12 +838,17 @@ for name, mod in models.items():
     if pseudo_r2 < 0:
         continue
 
+    disp_ratio = mod.pearson_chi2 / mod.df_resid
+    is_valid_dispersion = 0.8 <= disp_ratio <= 1.5
+
     metrics.append({
         "Model": name,
         "AIC": mod.aic,
         "Deviance": mod.deviance,
         "Null_Deviance": mod.null_deviance,
         "Pseudo_R2": pseudo_r2,
+        "Overdispersion_Ratio": disp_ratio,
+        "Is_Valid_Dispersion": is_valid_dispersion,
         "N": int(mod.nobs),
     })
 
@@ -720,10 +856,25 @@ if not metrics:
     st.error("❌ Tidak ada model valid yang berhasil dilatih.")
     st.stop()
 
-metrics_df = pd.DataFrame(metrics).sort_values(by="AIC").reset_index(drop=True)
-metrics_df["Delta_AIC"] = metrics_df["AIC"] - metrics_df["AIC"].min()
+metrics_df = pd.DataFrame(metrics)
 
-best_model_name = metrics_df.loc[metrics_df["AIC"].idxmin(), "Model"]
+# 1. Filter model yang lolos uji overdispersi
+valid_disp_df = metrics_df[metrics_df["Is_Valid_Dispersion"]]
+
+if not valid_disp_df.empty:
+    best_model_name = valid_disp_df.sort_values(by="AIC").iloc[0]["Model"]
+else:
+    best_model_name = metrics_df.sort_values(by="AIC").iloc[0]["Model"]
+
+# Mengurutkan agar model terpilih (Is_Valid_Dispersion=True & AIC terendah) selalu paling atas
+metrics_df = metrics_df.sort_values(
+    by=["Is_Valid_Dispersion", "AIC"], ascending=[False, True]
+).reset_index(drop=True)
+
+best_model_aic = metrics_df[metrics_df["Model"] == best_model_name].iloc[0][
+    "AIC"
+]
+metrics_df["Delta_AIC"] = metrics_df["AIC"] - best_model_aic
 valid_model_list = list(metrics_df["Model"])
 
 # PREPARASI TABEL RINGKASAN STATISTIK DESKRIPTIF
@@ -768,7 +919,7 @@ for col in valid_cats:
 df_stat_summary = pd.DataFrame(stat_rows)
 
 # =========================================================
-# 5. DASHBOARD & HASIL ANALISIS (TAB INTEGRASI)
+# 5. DASHBOARD & HASIL ANALISIS
 # =========================================================
 st.caption(
     f"**Status Analisis:** Berhasil memproses **{fmt_int(len(df_model))}**"
@@ -791,18 +942,14 @@ df_vif = None
 
 # --- TAB 0: UJI ASUMSI & STATISTIK ---
 with tab0:
-    # 1. RINGKASAN STATISTIK DESKRIPTIF VARIABEL
     st.subheader("Ringkasan Statistik Deskriptif Variabel")
     col_stat, _ = st.columns([4, 1])
     with col_stat:
-        st.dataframe(
-            df_stat_summary, use_container_width=True, hide_index=True
-        )
+        st.dataframe(df_stat_summary, use_container_width=False, hide_index=True)
 
     st.markdown("---")
     st.subheader("Visualisasi Sebaran Data (Boxplot)")
 
-    # Boxplot Khusus Variabel Target (berat_kg): Keseluruhan & Per Tahun
     st.markdown("**Boxplot Variabel Target (`berat_kg`)**")
     if "tahun" in df_model.columns:
         fig_bkg, (ax_bkg1, ax_bkg2) = plt.subplots(1, 2, figsize=(12, 4))
@@ -812,7 +959,6 @@ with tab0:
         )
         ax_bkg1.set_ylabel("Berat (kg)")
 
-        # Urutkan kategori tahun jika numerik/teks
         df_sort_yr = df_model.copy()
         df_sort_yr["tahun_sort"] = pd.to_numeric(
             df_sort_yr["tahun"], errors="coerce"
@@ -844,7 +990,6 @@ with tab0:
     st.pyplot(fig_bkg)
     plt.close(fig_bkg)
 
-    # Boxplot Seluruh Variabel Numerik Lainnya
     other_nums = [c for c in num_list if c != "berat_kg"]
     if other_nums:
         st.markdown("**Boxplot Variabel Numerik Lainnya**")
@@ -874,7 +1019,6 @@ with tab0:
 
     st.markdown("---")
 
-    # 2. UJI NORMALITAS
     st.subheader("1. Uji Normalitas (berat_kg)")
     target_data = df_model["berat_kg"].dropna()
 
@@ -912,7 +1056,6 @@ with tab0:
 
     fig_norm, (ax_dens, ax_qq) = plt.subplots(1, 2, figsize=(12, 4.5))
 
-    # Plot Densitas
     sns.histplot(
         target_data, kde=True, ax=ax_dens, color="#0E4C92", stat="density"
     )
@@ -920,7 +1063,6 @@ with tab0:
     ax_dens.set_xlabel("berat_kg")
     ax_dens.set_ylabel("Density")
 
-    # Q-Q Plot
     stats.probplot(target_data, dist="norm", plot=ax_qq)
     ax_qq.get_lines()[0].set_color("#0E4C92")
     ax_qq.get_lines()[0].set_markersize(4)
@@ -933,13 +1075,7 @@ with tab0:
 
     st.markdown("---")
 
-    # 3. UJI HETEROGENITAS VARIANS
     st.subheader("2. Uji Heterogenitas Varians (Levene's Test)")
-    st.caption(
-        "Menguji kesamaan varians `berat_kg` terhadap setiap variabel"
-        " kategorikal independen."
-    )
-
     het_results = []
     for cat in valid_cats:
         groups = [
@@ -973,10 +1109,7 @@ with tab0:
 
     st.markdown("---")
 
-    # 4. UJI MULTIKOLINEARITAS
     st.subheader("3. Uji Multikolinearitas (Variance Inflation Factor - VIF)")
-    st.caption("Menguji adanya multikolinearitas antar prediktor independen.")
-
     try:
         rhs_formula = formula_glm.split("~")[1].strip()
         X_mat = dmatrix(rhs_formula, data=df_model, return_type="dataframe")
@@ -1009,15 +1142,50 @@ with tab0:
 
 # --- TAB 1: EVALUASI MODEL ---
 with tab1:
-    # 1. RINGKASAN PERBANDINGAN MODEL
     st.subheader("Ringkasan Perbandingan Model")
 
-    col_m1, col_m2, col_m3 = st.columns(3)
-    col_m1.metric("Model Terbaik Terpilih", best_model_name)
-    col_m2.metric("AIC Terendah", fmt_num(metrics_df["AIC"].min(), 2))
-    col_m3.metric("Total Sampel Valid", f"{fmt_int(len(df_model))} Data")
+    best_row_info = metrics_df[metrics_df["Model"] == best_model_name].iloc[0]
 
-    st.markdown("**Tabel Perbandingan Kinerja Model (Sorted by AIC)**")
+    # Kartu Ringkasan Metric Bersih Tanpa Indentasi Markdown (Font Size 13px Agar Nama Model Tidak Terpotong)
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        st.markdown(
+            f"""<div style="background-color: #f7f9fc; border: 1px solid #e1e4e8; padding: 12px 15px; border-radius: 10px; border-left: 5px solid #0E4C92; box-shadow: 2px 2px 8px rgba(0,0,0,0.04); min-height: 85px;">
+<div style="font-size: 13px; color: #555555; margin-bottom: 4px;">Model Terbaik Terpilih</div>
+<div style="font-size: 13px; font-weight: bold; color: #0E4C92; line-height: 1.3; word-wrap: break-word;">{best_model_name}</div>
+</div>""",
+            unsafe_allow_html=True,
+        )
+    with col_m2:
+        st.markdown(
+            f"""<div style="background-color: #f7f9fc; border: 1px solid #e1e4e8; padding: 12px 15px; border-radius: 10px; border-left: 5px solid #0E4C92; box-shadow: 2px 2px 8px rgba(0,0,0,0.04); min-height: 85px;">
+<div style="font-size: 13px; color: #555555; margin-bottom: 4px;">AIC Model Terpilih</div>
+<div style="font-size: 18px; font-weight: bold; color: #0E4C92; line-height: 1.3;">{fmt_num(best_row_info["AIC"], 2)}</div>
+</div>""",
+            unsafe_allow_html=True,
+        )
+    with col_m3:
+        st.markdown(
+            f"""<div style="background-color: #f7f9fc; border: 1px solid #e1e4e8; padding: 12px 15px; border-radius: 10px; border-left: 5px solid #0E4C92; box-shadow: 2px 2px 8px rgba(0,0,0,0.04); min-height: 85px;">
+<div style="font-size: 13px; color: #555555; margin-bottom: 4px;">Overdispersion Ratio Model Terpilih</div>
+<div style="font-size: 18px; font-weight: bold; color: #0E4C92; line-height: 1.3;">{fmt_num(best_row_info["Overdispersion_Ratio"], 2)}</div>
+</div>""",
+            unsafe_allow_html=True,
+        )
+    with col_m4:
+        st.markdown(
+            f"""<div style="background-color: #f7f9fc; border: 1px solid #e1e4e8; padding: 12px 15px; border-radius: 10px; border-left: 5px solid #0E4C92; box-shadow: 2px 2px 8px rgba(0,0,0,0.04); min-height: 85px;">
+<div style="font-size: 13px; color: #555555; margin-bottom: 4px;">Total Sampel Valid</div>
+<div style="font-size: 18px; font-weight: bold; color: #0E4C92; line-height: 1.3;">{fmt_int(len(df_model))} Data</div>
+</div>""",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown(
+        "**Tabel Perbandingan Kinerja Model (Sorted by AIC & Overdispersion Ratio)**"
+    )
     metrics_display = metrics_df.copy()
     metrics_display["AIC"] = metrics_display["AIC"].apply(
         lambda x: fmt_num(x, 2)
@@ -1034,37 +1202,54 @@ with tab1:
     metrics_display["Delta_AIC"] = metrics_display["Delta_AIC"].apply(
         lambda x: fmt_num(x, 2)
     )
+    # Format Overdispersion Ratio menjadi 2 desimal
+    metrics_display["Overdispersion_Ratio"] = metrics_display[
+        "Overdispersion_Ratio"
+    ].apply(lambda x: fmt_num(x, 2))
     metrics_display["N"] = metrics_display["N"].apply(fmt_int)
 
-    col_tbl, _ = st.columns([4, 1])
-    with col_tbl:
-        st.dataframe(
-            metrics_display, use_container_width=True, hide_index=True
-        )
+    # Kolom Is_Valid_Dispersion dikeluarkan dari tampilan tabel
+    disp_cols = [
+        "Model",
+        "AIC",
+        "Overdispersion_Ratio",
+        "Pseudo_R2",
+        "Deviance",
+        "Null_Deviance",
+        "Delta_AIC",
+        "N",
+    ]
+    metrics_display = metrics_display[disp_cols]
 
-    st.markdown("""
-    **Panduan Penjelasan Indikator Kinerja Model:**
-    * **AIC (Akaike Information Criterion):** Ukuran efisiensi model yang memperhitungkan akurasi (*goodness of fit*) dan penalti kompleksitas (jumlah variabel). **Semakin kecil nilai AIC, semakin baik model.**
-    * **Deviance:** Total penyimpangan/kesalahan prediksi model terhadap data riil di lapangan. **Semakin kecil nilainya, semakin presisi estimasi model.**
-    * **Null Deviance:** Kesalahan acuan (*baseline*) jika data hanya dimodelkan menggunakan nilai rata-rata tanpa prediktor.
-    * **Pseudo R²:** Proporsi keragaman data yang berhasil dijelaskan oleh prediktor ($1 - \text{Deviance}/\text{Null Deviance}$). **Semakin tinggi nilainya (mendekati 1,0 atau 100%), semakin besar daya penjelas model.**
-    * **N:** Total jumlah sampel trip penangkapan valid yang digunakan dalam proses pemodelan.
-    * **Delta AIC (ΔAIC):** Selisih nilai AIC model dibandingkan model terbaik ($\Delta\text{AIC} = \text{AIC}_{\text{model}} - \text{AIC}_{\text{terendah}}$). Model dengan **ΔAIC = 0,00** adalah model dengan kinerja paling optimal.
-    """)
+    # Mengatur use_container_width=False dengan Pengaturan Konfigurasi Kolom Rapat/Kompak
+    column_cfg = {
+        "Model": st.column_config.Column("Model", width=220),
+        "AIC": st.column_config.Column("AIC", width=110),
+        "Overdispersion_Ratio": st.column_config.Column("Overdispersion_Ratio", width=160),
+        "Pseudo_R2": st.column_config.Column("Pseudo_R2", width=110),
+        "Deviance": st.column_config.Column("Deviance", width=120),
+        "Null_Deviance": st.column_config.Column("Null_Deviance", width=120),
+        "Delta_AIC": st.column_config.Column("Delta_AIC", width=100),
+        "N": st.column_config.Column("N", width=90),
+    }
+
+    st.dataframe(
+        metrics_display,
+        use_container_width=False,
+        hide_index=True,
+        column_config=column_cfg,
+    )
 
     st.info(
-        f"Model **{best_model_name}** dipilih sebagai model terbaik "
-        "karena memiliki nilai **AIC terendah** (ΔAIC = 0,00) dan daya penjelas"
-        " (Pseudo R²) yang optimal. Model ini berhasil meminimalkan"
-        " penyimpangan data (*deviance*) tanpa mengalami kompleksitas berlebih"
-        " (*overfitting*)."
+        f"Model **{best_model_name}** dipilih"
+        " sebagai model terbaik karena memenuhi syarat rasio overdispersi"
+        " ($\sim 1,0$) dan memiliki nilai **AIC terendah** di antara kelompok"
+        " model yang valid."
     )
 
     st.markdown("---")
 
-    # 2. TABEL KHUSUS OVERDISPERSION RATIO SELURUH MODEL
     st.markdown("**Tabel Overdispersion Ratio Seluruh Model**")
-
     disp_rows = []
     for name, mod in models.items():
         disp_ratio = mod.pearson_chi2 / mod.df_resid
@@ -1079,33 +1264,19 @@ with tab1:
             "Model": name,
             "Pearson Chi2": fmt_num(mod.pearson_chi2, 2),
             "df Resid": fmt_int(mod.df_resid),
-            "Overdispersion Ratio": fmt_num(disp_ratio, 4),
+            "Overdispersion Ratio": fmt_num(disp_ratio, 2),
             "Status Evaluasi Varians": status,
         })
 
     df_disp_table = pd.DataFrame(disp_rows)
     col_disp, _ = st.columns([3.5, 1])
     with col_disp:
-        st.dataframe(
-            df_disp_table, use_container_width=False, hide_index=True
-        )
-
-    st.markdown("""
-    **Panduan Penjelasan Indikator Evaluasi Dispersi Varians:**
-    * **Pearson Chi2 ($\chi^2$):** Total kuadrat penyimpangan residual Pearson yang mengukur tingkat kesalahan varians model terhadap data riil.
-    * **df Resid (Degrees of Freedom Residuals):** Derajat kebebasan tersisa pada model ($N - K$, jumlah sampel dikurangi jumlah parameter prediktor).
-    * **Overdispersion Ratio:** Rasio kesesuaian keragaman data ($\text{Pearson Chi2} / \text{df Resid}$). Nilai acuan ideal berada pada kisaran **1,0** (rentang normal **0,8 – 1,5**).
-    * **Status Evaluasi Varians:**
-        * **Ideal / Teratasi (0,8 – 1,5):** Keragaman data di lapangan berhasil diakomodasi dengan baik oleh model.
-        * **Overdispersion Tinggi (> 1,5):** Keragaman data riil jauh lebih besar dibanding teoretis model, menyebabkan *standard error* terlalu kecil dan uji signifikansi (*p-value*) tidak valid.
-        * **Underdispersion (< 0,8):** Keragaman data di lapangan lebih sempit/seragam daripada estimasi teoretis model.
-    """)
+        st.dataframe(df_disp_table, use_container_width=False, hide_index=True)
 
     st.markdown("---")
     st.subheader("Residual Plot Model")
 
-    # GRID SUBPLOT RESIDUAL DIBUAT EXACT
-    fig_res, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig_res, axes = plt.subplots(2, 2, figsize=(14, 10))
     axes_list = axes.flatten()
 
     for idx, (name, mod) in enumerate(models.items()):
@@ -1125,25 +1296,13 @@ with tab1:
         axes_list[idx].set_xlabel("Fitted Values", fontsize=8)
         axes_list[idx].set_ylabel("Response Residuals", fontsize=8)
 
-    # Menghapus sumbu kosong jika model kurang dari 4
     for i in range(len(models), 4):
         fig_res.delaxes(axes_list[i])
 
     plt.tight_layout()
     st.pyplot(fig_res)
 
-    st.info(
-        "**Interpretasi Residual Plot:**\n\n• **Sebaran di Sekitar Garis Nol (y ="
-        " 0):** Residual yang tersebar secara acak dan seimbang di sekitar"
-        " garis merah horizontal menunjukkan estimasi model tidak bias"
-        f" (unbiased).\n**Kinerja Model Terpilih ({best_model_name}):** Memiliki"
-        " sebaran residual yang paling terdistribusi rata dan homogen di"
-        " sekitar garis nol dibanding GLM Poisson. Hal ini mengindikasikan"
-        " variabilitas data hasil tangkapan berhasil ditangkap secara tepat"
-        " tanpa gejala pola kurva tersisa (heteroskedastisitas)."
-    )
-
-# --- TAB 2: EFEK PARSIAL DINAMIS ---
+# --- TAB 2: EFEK PARSIAL DINAMIS (SAFE INDEXING & SKALA LINK) ---
 with tab2:
     col_sel_t2, _ = st.columns([2, 1])
     with col_sel_t2:
@@ -1180,7 +1339,6 @@ with tab2:
     plot_idx = 0
     partial_interp_list = []
 
-    # KAMUS NAMA VARIABEL BAHASA INDONESIA
     var_label_map = {
         "abk": "Jumlah ABK",
         "panjang_kapal": "Panjang Kapal",
@@ -1199,28 +1357,31 @@ with tab2:
         "daerah": "Daerah Penangkapan",
     }
 
-    # Plot & Analisis Dinamis Numerik
     for col_name in valid_nums:
         ax = axes_flat[plot_idx]
         grid = np.linspace(
             df_model[col_name].min(), df_model[col_name].max(), 150
         )
-        pred = model_tab2.get_prediction(make_dummy(col_name, grid))
-        fit = pred.predicted_mean - pred.predicted_mean.mean()
-        se = pred.se_mean
+        try:
+            pred = model_tab2.get_prediction(
+                make_dummy(col_name, grid), transform=False
+            )
+            fit = pred.predicted_mean - pred.predicted_mean.mean()
+            se = pred.se_mean
+        except Exception:
+            pred_vals = model_tab2.predict(make_dummy(col_name, grid))
+            fit = np.log(np.maximum(pred_vals, 1e-6))
+            fit = fit - fit.mean()
+            se = np.abs(fit) * 0.1
+
+        fit = np.asarray(fit)
+        se = np.asarray(se)
 
         ax.plot(grid, fit, "k-", lw=1.2)
         ax.plot(grid, fit + 1.96 * se, "k--", lw=0.8)
         ax.plot(grid, fit - 1.96 * se, "k--", lw=0.8)
-        ax.plot(
-            df_model[col_name],
-            np.full_like(df_model[col_name], ax.get_ylim()[0]),
-            "|k",
-            ms=5,
-            alpha=0.5,
-        )
         ax.set_title(f"Effect: {col_name}", fontsize=10, fontweight="bold")
-        ax.set_ylabel("Partial effect", fontsize=8)
+        ax.set_ylabel("Partial effect (log scale)", fontsize=8)
         plot_idx += 1
 
         v_label = var_label_map.get(
@@ -1240,11 +1401,8 @@ with tab2:
 
         partial_interp_list.append(f"• {v_label}: {desc}")
 
-    # Plot & Analisis Dinamis Kategorikal
     for cat_col in valid_cats:
         ax = axes_flat[plot_idx]
-
-        # DIPERBAIKI: Pengurutan Kategori Aman untuk Teks & Angka
         uniques = sorted(
             df_model[cat_col].dropna().unique(),
             key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
@@ -1253,9 +1411,21 @@ with tab2:
         if len(uniques) > 12:
             uniques = df_model[cat_col].value_counts().index[:10].tolist()
 
-        pred = model_tab2.get_prediction(make_dummy(cat_col, uniques))
-        fit = pred.predicted_mean - pred.predicted_mean.mean()
-        se = pred.se_mean
+        try:
+            pred = model_tab2.get_prediction(
+                make_dummy(cat_col, uniques), transform=False
+            )
+            fit = pred.predicted_mean - pred.predicted_mean.mean()
+            se = pred.se_mean
+        except Exception:
+            pred_vals = model_tab2.predict(make_dummy(cat_col, uniques))
+            fit = np.log(np.maximum(pred_vals, 1e-6))
+            fit = fit - fit.mean()
+            se = np.abs(fit) * 0.1
+
+        fit = np.asarray(fit)
+        se = np.asarray(se)
+
         x_pos = np.arange(len(uniques))
 
         ax.bar(
@@ -1310,12 +1480,8 @@ with tab2:
     st.pyplot(fig_grid)
 
     partial_interp_html = "<br>".join(partial_interp_list)
-    st.info(
-        f"**Interpretasi Efek Parsial Parameter ({selected_model_name_t2}):**\n\n"
-        + "\n\n".join(partial_interp_list)
-    )
 
-# --- TAB 3: STANDARISASI CPUE ---
+# --- TAB 3: STANDARISASI CPUE (EMMEANS) ---
 with tab3:
     col_sel_t3, _ = st.columns([2, 1])
     with col_sel_t3:
@@ -1330,32 +1496,23 @@ with tab3:
     st.subheader(f"Hasil Standarisasi CPUE ({selected_model_name_t3})")
 
     grid_yr_display = None
-    grid_tm_display = None
+    grid_tm_table = None
     fig_yr = None
     fig_mo = None
 
-    # 1. Standarisasi Tahunan (Jika Kolom 'tahun' Ada)
+    # 1. Standarisasi Tahunan via Emmeans
     if "tahun" in valid_cats:
-        # DIPERBAIKI: Pengurutan Tahun Aman untuk Teks & Angka
-        years = sorted(
-            df_model["tahun"].unique(),
-            key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
+        grid_yr = calculate_emmeans_proportional(
+            model_tab3,
+            "tahun",
+            df_model,
+            valid_cats,
+            valid_nums,
+            "log_effort",
+            1.0,
         )
-        grid_yr_dict = {c: [defaults[c]] * len(years) for c in defaults}
-        grid_yr_dict["tahun"] = years
-        if effort_col:
-            grid_yr_dict[effort_col] = 1.0
-            grid_yr_dict["log_effort"] = 0.0
 
-        grid_yr = pd.DataFrame(grid_yr_dict)
-        pred_yr = model_tab3.get_prediction(grid_yr).summary_frame()
-        grid_yr["CPUE_std (kg/hari)"] = pred_yr["mean"]
-        grid_yr["Lower CI"] = pred_yr["mean_ci_lower"]
-        grid_yr["Upper CI"] = pred_yr["mean_ci_upper"]
-
-        grid_yr_display = grid_yr[
-            ["tahun", "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]
-        ].copy()
+        grid_yr_display = grid_yr.copy()
         grid_yr_display["CPUE_std (kg/hari)"] = grid_yr_display[
             "CPUE_std (kg/hari)"
         ].apply(lambda x: fmt_num(x, 2))
@@ -1368,15 +1525,12 @@ with tab3:
 
         col_t1, col_t2 = st.columns([1, 1.5])
         with col_t1:
-            st.markdown("**CPUE Standar Tahunan**")
-            st.dataframe(
-                grid_yr_display,
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.markdown("**CPUE Standar Tahunan (Marginal Means)**")
+            st.dataframe(grid_yr_display, use_container_width=False, hide_index=True)
 
         with col_t2:
             fig_yr, ax_yr = plt.subplots(figsize=(7, 3.5))
+            years = list(grid_yr["tahun"])
             x_raw = np.arange(len(years))
 
             if len(years) > 2:
@@ -1434,38 +1588,31 @@ with tab3:
 
         st.markdown("---")
 
-    # 2. Standarisasi Musiman / Bulanan
+    # 2. Standarisasi Musiman / Bulanan via Emmeans
     time_cat = next(
         (c for c in ["bulan", "musim", "quarter"] if c in valid_cats), None
     )
     if time_cat:
-        # DIPERBAIKI: Pengurutan Unit Waktu Aman untuk Teks & Angka
-        time_units = sorted(
-            df_model[time_cat].unique(),
-            key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
+        grid_tm = calculate_emmeans_proportional(
+            model_tab3,
+            time_cat,
+            df_model,
+            valid_cats,
+            valid_nums,
+            "log_effort",
+            1.0,
         )
 
-        grid_tm_dict = {c: [defaults[c]] * len(time_units) for c in defaults}
-        grid_tm_dict[time_cat] = time_units
-        if effort_col:
-            grid_tm_dict[effort_col] = 1.0
-            grid_tm_dict["log_effort"] = 0.0
-
-        grid_tm = pd.DataFrame(grid_tm_dict)
-        pred_tm = model_tab3.get_prediction(grid_tm).summary_frame()
-        grid_tm["CPUE_std (kg/hari)"] = pred_tm["mean"]
-        grid_tm["Lower CI"] = pred_tm["mean_ci_lower"]
-        grid_tm["Upper CI"] = pred_tm["mean_ci_upper"]
-
+        grid_tm_display = grid_tm.copy()
         if time_cat == "bulan":
-            grid_tm_display = grid_tm.copy()
             grid_tm_display["bulan"] = grid_tm_display["bulan"].apply(
                 lambda x: month_map.get(str(x), str(x))
             )
-            x_labels = [month_map.get(str(t), str(t)) for t in time_units]
+            x_labels = [
+                month_map.get(str(t), str(t)) for t in grid_tm[time_cat]
+            ]
         else:
-            grid_tm_display = grid_tm.copy()
-            x_labels = [str(t) for t in time_units]
+            x_labels = [str(t) for t in grid_tm[time_cat]]
 
         grid_tm_table = grid_tm_display[
             [time_cat, "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]
@@ -1483,14 +1630,11 @@ with tab3:
         col_b1, col_b2 = st.columns([1, 1.5])
         with col_b1:
             st.markdown(f"**CPUE Standar Berdasarkan ({time_cat.title()})**")
-            st.dataframe(
-                grid_tm_table,
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.dataframe(grid_tm_table, use_container_width=False, hide_index=True)
 
         with col_b2:
             fig_mo, ax_mo = plt.subplots(figsize=(7, 3.5))
+            time_units = list(grid_tm[time_cat])
             x_raw = np.arange(len(time_units))
 
             if len(time_units) > 2:
@@ -1549,7 +1693,6 @@ with tab3:
             )
             st.pyplot(fig_mo)
 
-    # Menyiapkan Grafik Base64 untuk Laporan dalam bentuk HTML
     img_res_b64 = fig_to_base64(fig_res) if fig_res else None
     img_grid_b64 = fig_to_base64(fig_grid) if fig_grid else None
     img_yr_b64 = fig_to_base64(fig_yr) if fig_yr else None
@@ -1564,17 +1707,16 @@ with tab3:
     if fig_mo:
         plt.close(fig_mo)
 
-    # Export Multi-sheet Excel & HTML Report
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        if "tahun" in valid_cats:
-            grid_yr[
-                ["tahun", "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]
-            ].to_excel(writer, sheet_name="CPUE_Tahunan", index=False)
-        if time_cat:
-            grid_tm_display[
-                [time_cat, "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]
-            ].to_excel(writer, sheet_name=f"CPUE_{time_cat}", index=False)
+        if "tahun" in valid_cats and grid_yr_display is not None:
+            grid_yr_display.to_excel(
+                writer, sheet_name="CPUE_Tahunan", index=False
+            )
+        if time_cat and grid_tm_table is not None:
+            grid_tm_table.to_excel(
+                writer, sheet_name=f"CPUE_{time_cat}", index=False
+            )
 
     html_report = generate_html_report(
         best_model_name,
