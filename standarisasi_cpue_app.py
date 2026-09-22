@@ -305,9 +305,9 @@ def generate_html_report(
             </div>
             
             <div class="card">
-                <strong>Model Terbaik Terpilih (Lolos Asumsi Overdispersi):</strong> {best_model_name}<br>
+                <strong>Model Terbaik Terpilih:</strong> {best_model_name}<br>
                 <strong>Total Sampel Valid:</strong> {fmt_int(len_data)} Observasi Trip<br>
-                <strong>AIC Model Terpilih:</strong> {best_aic} | <strong>Pseudo R²:</strong> {best_r2}%
+                <strong>AIC Model Terpilih:</strong> {best_aic} | <strong>R² (Deviance Explained):</strong> {best_r2}%
             </div>
             
             <h2>1. Ringkasan Statistik Deskriptif Variabel</h2>
@@ -332,8 +332,7 @@ def generate_html_report(
             {metrics_df.to_html(index=False)}
             <div class="interpretation">
                 <strong>Interpretasi Evaluasi Model:</strong><br>
-                Sesuai petunjuk dalam buku pedoman standarisasi CPUE, model dengan status <strong>Overdispersion Tinggi (Rasio > 1,5)</strong> digugurkan dari seleksi utama karena estimasi varians tidak valid. 
-                Model <strong>{best_model_name}</strong> terpilih sebagai model terbaik karena memenuhi kriteria keragaman varians ideal (overdispersi $\approx$ 1,0) serta memiliki nilai AIC terendah di antara kelompok model yang valid secara statistik.
+                Sesuai petunjuk dalam buku pedoman standarisasi CPUE, model <strong>{best_model_name}</strong> terpilih sebagai model terbaik berdasarkan kriteria <strong>Rasio Overdispersi terendah</strong> dan <strong>AIC terendah</strong>.
             </div>
             
             <h2>4. Evaluasi Dispersi Varians Seluruh Model</h2>
@@ -548,9 +547,12 @@ if uploaded_file is None:
 
 df = pd.read_excel(uploaded_file)
 
+if "berat" in df.columns and "berat_kg" not in df.columns:
+    df["berat_kg"] = df["berat"]
+
 if "berat_kg" not in df.columns:
     st.error(
-        "❌ Kolom target **'berat_kg'** tidak ditemukan dalam file Excel. Mohon"
+        "❌ Kolom target **'berat'** atau **'berat_kg'** tidak ditemukan dalam file Excel. Mohon"
         " pastikan nama kolom target sesuai."
     )
     render_footer()
@@ -564,6 +566,7 @@ cat_candidates = [
     "bulan",
     "musim",
     "quarter",
+    "alat_tangkap",
     "teknik_penangkapan",
     "jenis_alat_tangkap",
     "daerah_spasial",
@@ -683,7 +686,7 @@ if len(df_model) < 10:
     st.stop()
 
 # =========================================================
-# 4. PEMBENTUKAN FORMULA & PEMODELAN (DENGAN FALLBACK GAM)
+# 4. PEMBENTUKAN FORMULA & PEMODELAN
 # =========================================================
 glm_terms = [f"C({c})" for c in valid_cats] + valid_nums
 if not glm_terms:
@@ -706,22 +709,16 @@ with st.spinner("Sedang melatih model GLM & GAM..."):
     except Exception:
         pass
 
-    # 2. Estimasi Parameter Dispersi Alpha (MASS::glm.nb)
+    # 2. Estimasi Parameter Dispersi Alpha
     est_alpha = 1.0
     if "GLM Poisson" in models:
         try:
-            df_model["lambda_est"] = pois_model.mu
-            df_model["aux_ols"] = (
-                (df_model["berat_kg"] - df_model["lambda_est"]) ** 2
-                - df_model["berat_kg"]
-            ) / df_model["lambda_est"]
-            ols_res = sm.OLS(
-                df_model["aux_ols"], df_model["lambda_est"]
-            ).fit()
-            est_alpha = max(0.001, float(ols_res.params[0]))
+            disp_p = pois_model.pearson_chi2 / pois_model.df_resid
+            est_alpha = max(0.001, (disp_p - 1) / pois_model.mu.mean())
         except Exception:
             est_alpha = 1.0
 
+    # 3. GLM Negative Binomial
     try:
         models["GLM Negative Binomial"] = smf.glm(
             formula=formula_glm,
@@ -734,7 +731,7 @@ with st.spinner("Sedang melatih model GLM & GAM..."):
     except Exception:
         pass
 
-    # 3. Tweedie Compound Poisson (Profile Likelihood)
+    # 4. Tweedie Compound Poisson
     best_p = 1.5
     best_llf = -np.inf
     for p in np.arange(1.1, 2.0, 0.1):
@@ -765,10 +762,9 @@ with st.spinner("Sedang melatih model GLM & GAM..."):
     except Exception:
         pass
 
-    # 4. GAM Negative Binomial (Dengan Opsi Fallback Otomatis)
+    # 5. GAM Negative Binomial
     gam_success = False
     if valid_nums:
-        # Percobaan 1: Penalized GLMGam
         try:
             gam_linear_terms = [f"C({c})" for c in valid_cats]
             formula_gam_lin = (
@@ -798,7 +794,6 @@ with st.spinner("Sedang melatih model GLM & GAM..."):
         except Exception:
             pass
 
-        # Percobaan 2 (Fallback): B-Splines Unpenalized via Formula
         if not gam_success:
             try:
                 gam_terms = [f"C({c})" for c in valid_cats]
@@ -827,7 +822,7 @@ if not models:
     st.stop()
 
 # =========================================================
-# SELEKSI MODEL (FILTER OVERDISPERSION)
+# SELEKSI MODEL (BERDASARKAN RASIO OVERDISPERSI TERENDAH KEMUDIAN AIC TERENDAH)
 # =========================================================
 metrics = []
 for name, mod in models.items():
@@ -835,20 +830,15 @@ for name, mod in models.items():
         continue
 
     pseudo_r2 = 1 - (mod.deviance / mod.null_deviance)
-    if pseudo_r2 < 0:
-        continue
-
     disp_ratio = mod.pearson_chi2 / mod.df_resid
-    is_valid_dispersion = 0.8 <= disp_ratio <= 1.5
 
     metrics.append({
         "Model": name,
         "AIC": mod.aic,
         "Deviance": mod.deviance,
         "Null_Deviance": mod.null_deviance,
-        "Pseudo_R2": pseudo_r2,
+        "Pseudo_R2": max(0.0, pseudo_r2),
         "Overdispersion_Ratio": disp_ratio,
-        "Is_Valid_Dispersion": is_valid_dispersion,
         "N": int(mod.nobs),
     })
 
@@ -858,22 +848,13 @@ if not metrics:
 
 metrics_df = pd.DataFrame(metrics)
 
-# 1. Filter model yang lolos uji overdispersi
-valid_disp_df = metrics_df[metrics_df["Is_Valid_Dispersion"]]
-
-if not valid_disp_df.empty:
-    best_model_name = valid_disp_df.sort_values(by="AIC").iloc[0]["Model"]
-else:
-    best_model_name = metrics_df.sort_values(by="AIC").iloc[0]["Model"]
-
-# Mengurutkan agar model terpilih (Is_Valid_Dispersion=True & AIC terendah) selalu paling atas
+# Urutkan berdasarkan Rasio Overdispersi terendah lalu AIC terendah
 metrics_df = metrics_df.sort_values(
-    by=["Is_Valid_Dispersion", "AIC"], ascending=[False, True]
+    by=["Overdispersion_Ratio", "AIC"], ascending=[True, True]
 ).reset_index(drop=True)
 
-best_model_aic = metrics_df[metrics_df["Model"] == best_model_name].iloc[0][
-    "AIC"
-]
+best_model_name = metrics_df.iloc[0]["Model"]
+best_model_aic = metrics_df.iloc[0]["AIC"]
 metrics_df["Delta_AIC"] = metrics_df["AIC"] - best_model_aic
 valid_model_list = list(metrics_df["Model"])
 
@@ -1146,7 +1127,6 @@ with tab1:
 
     best_row_info = metrics_df[metrics_df["Model"] == best_model_name].iloc[0]
 
-    # Kartu Ringkasan Metric Bersih Tanpa Indentasi Markdown (Font Size 13px Agar Nama Model Tidak Terpotong)
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     with col_m1:
         st.markdown(
@@ -1159,16 +1139,16 @@ with tab1:
     with col_m2:
         st.markdown(
             f"""<div style="background-color: #f7f9fc; border: 1px solid #e1e4e8; padding: 12px 15px; border-radius: 10px; border-left: 5px solid #0E4C92; box-shadow: 2px 2px 8px rgba(0,0,0,0.04); min-height: 85px;">
-<div style="font-size: 13px; color: #555555; margin-bottom: 4px;">AIC Model Terpilih</div>
-<div style="font-size: 18px; font-weight: bold; color: #0E4C92; line-height: 1.3;">{fmt_num(best_row_info["AIC"], 2)}</div>
+<div style="font-size: 13px; color: #555555; margin-bottom: 4px;">Rasio Overdispersi Model Terpilih</div>
+<div style="font-size: 18px; font-weight: bold; color: #0E4C92; line-height: 1.3;">{fmt_num(best_row_info["Overdispersion_Ratio"], 2)}</div>
 </div>""",
             unsafe_allow_html=True,
         )
     with col_m3:
         st.markdown(
             f"""<div style="background-color: #f7f9fc; border: 1px solid #e1e4e8; padding: 12px 15px; border-radius: 10px; border-left: 5px solid #0E4C92; box-shadow: 2px 2px 8px rgba(0,0,0,0.04); min-height: 85px;">
-<div style="font-size: 13px; color: #555555; margin-bottom: 4px;">Overdispersion Ratio Model Terpilih</div>
-<div style="font-size: 18px; font-weight: bold; color: #0E4C92; line-height: 1.3;">{fmt_num(best_row_info["Overdispersion_Ratio"], 2)}</div>
+<div style="font-size: 13px; color: #555555; margin-bottom: 4px;">AIC Model Terpilih</div>
+<div style="font-size: 18px; font-weight: bold; color: #0E4C92; line-height: 1.3;">{fmt_num(best_row_info["AIC"], 2)}</div>
 </div>""",
             unsafe_allow_html=True,
         )
@@ -1184,7 +1164,7 @@ with tab1:
     st.markdown("<br>", unsafe_allow_html=True)
 
     st.markdown(
-        "**Tabel Perbandingan Kinerja Model (Sorted by AIC & Overdispersion Ratio)**"
+        "**Tabel Perbandingan Kinerja Model (Diurutkan berdasarkan Rasio Overdispersi & AIC)**"
     )
     metrics_display = metrics_df.copy()
     metrics_display["AIC"] = metrics_display["AIC"].apply(
@@ -1202,17 +1182,15 @@ with tab1:
     metrics_display["Delta_AIC"] = metrics_display["Delta_AIC"].apply(
         lambda x: fmt_num(x, 2)
     )
-    # Format Overdispersion Ratio menjadi 2 desimal
     metrics_display["Overdispersion_Ratio"] = metrics_display[
         "Overdispersion_Ratio"
     ].apply(lambda x: fmt_num(x, 2))
     metrics_display["N"] = metrics_display["N"].apply(fmt_int)
 
-    # Kolom Is_Valid_Dispersion dikeluarkan dari tampilan tabel
     disp_cols = [
         "Model",
-        "AIC",
         "Overdispersion_Ratio",
+        "AIC",
         "Pseudo_R2",
         "Deviance",
         "Null_Deviance",
@@ -1221,11 +1199,10 @@ with tab1:
     ]
     metrics_display = metrics_display[disp_cols]
 
-    # Mengatur use_container_width=False dengan Pengaturan Konfigurasi Kolom Rapat/Kompak
     column_cfg = {
         "Model": st.column_config.Column("Model", width=220),
-        "AIC": st.column_config.Column("AIC", width=110),
         "Overdispersion_Ratio": st.column_config.Column("Overdispersion_Ratio", width=160),
+        "AIC": st.column_config.Column("AIC", width=110),
         "Pseudo_R2": st.column_config.Column("Pseudo_R2", width=110),
         "Deviance": st.column_config.Column("Deviance", width=120),
         "Null_Deviance": st.column_config.Column("Null_Deviance", width=120),
@@ -1242,9 +1219,9 @@ with tab1:
 
     st.info(
         f"Model **{best_model_name}** dipilih"
-        " sebagai model terbaik karena memenuhi syarat rasio overdispersi"
-        " ($\sim 1,0$) dan memiliki nilai **AIC terendah** di antara kelompok"
-        " model yang valid."
+        " sebagai model terbaik berdasarkan kriteria **Rasio Overdispersi terendah**"
+        f" ({fmt_num(best_row_info['Overdispersion_Ratio'], 2)}) dan **AIC terendah**"
+        f" ({fmt_num(best_row_info['AIC'], 2)})."
     )
 
     st.markdown("---")
@@ -1302,7 +1279,45 @@ with tab1:
     plt.tight_layout()
     st.pyplot(fig_res)
 
-# --- TAB 2: EFEK PARSIAL DINAMIS (SAFE INDEXING & SKALA LINK) ---
+    # ---------------------------------------------------------
+    # RINCIAN KOEFISIEN DAN UJI DISPERSI SELURUH MODEL
+    # ---------------------------------------------------------
+    st.markdown("---")
+    st.subheader("Rincian Koefisien dan Pengujian Dispersi Seluruh Model")
+
+    for m_name in valid_model_list:
+        mod_detail = models[m_name]
+        is_best = (m_name == best_model_name)
+        expander_title = f"Rincian Model: {m_name} " + ("(Model Terpilih)" if is_best else "")
+
+        with st.expander(expander_title, expanded=is_best):
+            # 1. Perhitungan Uji Overdispersi
+            disp_ratio_val = mod_detail.pearson_chi2 / mod_detail.df_resid
+            p_val_disp = 1 - stats.chi2.cdf(mod_detail.pearson_chi2, mod_detail.df_resid)
+
+            st.markdown(f"**Pengujian Overdispersi ({m_name})**")
+            col_d1, col_d2, col_d3 = st.columns(3)
+            col_d1.metric("Rasio Dispersi", fmt_num(disp_ratio_val, 3))
+            col_d2.metric("Pearson Chi-Squared", fmt_num(mod_detail.pearson_chi2, 2))
+            col_d3.metric("p-value Dispersi", f"{p_val_disp:.4e}".replace(".", ","))
+
+            if disp_ratio_val > 1.5:
+                st.warning(f"**Overdispersi Terdeteksi:** Rasio dispersi ({fmt_num(disp_ratio_val, 2)}) > 1,5 dengan p-value < 0,05.")
+            else:
+                st.success(f"**Dispersi Ideal:** Rasio dispersi ({fmt_num(disp_ratio_val, 2)}) berada dalam batas wajar.")
+
+            # 2. Ringkasan Deviance & AIC
+            null_df_val = int(mod_detail.df_model + mod_detail.df_resid)
+            st.markdown("**Ringkasan Deviance dan AIC Model**")
+            st.write(f"- **Null Deviance:** `{fmt_num(mod_detail.null_deviance, 2)}` pada `{null_df_val}` derajat bebas")
+            st.write(f"- **Residual Deviance:** `{fmt_num(mod_detail.deviance, 2)}` pada `{fmt_int(mod_detail.df_resid)}` derajat bebas")
+            st.write(f"- **AIC:** `{fmt_num(mod_detail.aic, 2)}`")
+
+            # 3. Tampilan Teks Ringkasan Rinci
+            st.markdown("**Tabel Koefisien Lengkap**")
+            st.text(mod_detail.summary().as_text())
+
+# --- TAB 2: EFEK PARSIAL DINAMIS DENGAN PANDUAN BACA & INTERPRETASI BERSUSUN ---
 with tab2:
     col_sel_t2, _ = st.columns([2, 1])
     with col_sel_t2:
@@ -1315,6 +1330,24 @@ with tab2:
 
     model_tab2 = models[selected_model_name_t2]
     st.subheader(f"Plot Efek Parsial Parameter ({selected_model_name_t2})")
+
+    # PANDUAN MEMBACA PLOT EFEK PARSIAL
+    with st.expander("Panduan Plot Efek Parsial", expanded=False):
+        st.markdown("""
+        Plot efek parsial menggambarkan kontribusi isolasi dari masing-masing variabel terhadap hasil tangkapan (CPUE) dengan mengasumsikan variabel lainnya konstan.
+        
+        * **Sumbu Y (Partial Effect - Skala Log):**
+          * **Nilai > 0:** Variabel memberikan pengaruh positif (meningkatkan CPUE terstandar).
+          * **Nilai = 0 (Garis Merah):** Variabel bersifat netral / tidak mengubah CPUE.
+          * **Nilai < 0:** Variabel memberikan pengaruh negatif (menurunkan CPUE terstandar).
+        * **Grafik Garis (Variabel Numerik):**
+          * **Garis Solid (Hitam):** Tren arah pengaruh variabel. Jika melengkung/naik-turun, menandakan pola hubungan non-linear (GAM/Spline).
+          * **Garis Putus-putus:** Selang Kepercayaan 95% (Confidence Interval). Semakin sempit rentangnya, semakin pasti estimasi dampaknya.
+        * **Grafik Batang (Variabel Kategorikal):**
+          * Batang di atas garis merah (0) = Kategori tersebut meningkatkan CPUE.
+          * Batang di bawah garis merah (0) = Kategori tersebut menurunkan CPUE.
+          * **Error Bar (Garis I):** Rentang variasi estimasi pada kategori tersebut.
+        """)
 
     defaults = {"log_effort": 0.0}
     for c in valid_cats:
@@ -1387,19 +1420,22 @@ with tab2:
         v_label = var_label_map.get(
             col_name, col_name.replace("_", " ").title()
         )
-        delta_eff = fit[-1] - fit[0]
-        if delta_eff > 0:
-            desc = (
-                f"Peningkatan nilai {v_label.lower()} mendorong peningkatan"
-                " pada tingkat hasil tangkapan CPUE."
-            )
+        
+        max_i = int(np.argmax(fit))
+        min_i = int(np.argmin(fit))
+        
+        if 5 < max_i < (len(grid) - 5):
+            desc = f"Berpengaruh non-linear (berpola cembung) dengan puncak dampak positif tertinggi pada nilai <b>{grid[max_i]:.2f}</b>, lalu menurun kembali."
+        elif 5 < min_i < (len(grid) - 5):
+            desc = f"Berpengaruh non-linear (berpola cekung) dengan titik terendah pada nilai <b>{grid[min_i]:.2f}</b>, sebelum kembali meningkat."
         else:
-            desc = (
-                f"Peningkatan nilai {v_label.lower()} berhubungan dengan"
-                " penurunan tingkat hasil tangkapan CPUE."
-            )
+            delta_eff = fit[-1] - fit[0]
+            if delta_eff > 0:
+                desc = f"Berpengaruh positif secara konsisten (peningkatan {v_label.lower()} mendorong kenaikan hasil tangkapan)."
+            else:
+                desc = f"Berpengaruh negatif secara konsisten (peningkatan {v_label.lower()} berhubungan dengan penurunan hasil tangkapan)."
 
-        partial_interp_list.append(f"• {v_label}: {desc}")
+        partial_interp_list.append(f"• <b>{v_label}</b>: {desc}")
 
     for cat_col in valid_cats:
         ax = axes_flat[plot_idx]
@@ -1469,9 +1505,9 @@ with tab2:
 
         desc = (
             f"Tingkat hasil tangkapan paling tinggi ditemukan pada"
-            f" {max_c}, sedangkan yang terendah tercatat pada {min_c}."
+            f" <b>{max_c}</b>, sedangkan yang terendah tercatat pada <b>{min_c}</b>."
         )
-        partial_interp_list.append(f"• {v_label}: {desc}")
+        partial_interp_list.append(f"• <b>{v_label}</b>: {desc}")
 
     for i in range(plot_idx, len(axes_flat)):
         fig_grid.delaxes(axes_flat[i])
@@ -1481,7 +1517,13 @@ with tab2:
 
     partial_interp_html = "<br>".join(partial_interp_list)
 
-# --- TAB 3: STANDARISASI CPUE (EMMEANS) ---
+    st.markdown("---")
+    st.subheader("Interpretasi Detail Efek Parsial Parameter")
+    interp_clean_str = "\n\n".join([item.replace("<b>", "**").replace("</b>", "**") for item in partial_interp_list])
+    st.info(f"**Rangkuman Pengaruh Parsial Variabel terhadap Hasil Tangkapan:**\n\n{interp_clean_str}")
+
+
+# --- TAB 3: STANDARISASI CPUE DENGAN PANDUAN BACA & INTERPRETASI OTOMATIS ---
 with tab3:
     col_sel_t3, _ = st.columns([2, 1])
     with col_sel_t3:
@@ -1494,6 +1536,16 @@ with tab3:
 
     model_tab3 = models[selected_model_name_t3]
     st.subheader(f"Hasil Standarisasi CPUE ({selected_model_name_t3})")
+
+    # PANDUAN MEMBACA STANDARISASI CPUE
+    with st.expander("Panduan CPUE Terstandar", expanded=False):
+        st.markdown("""
+        Hasil standarisasi CPUE (Marginal Means / Emmeans) menunjukkan estimasi rata-rata hasil tangkapan per unit effort yang telah dibersihkan dari efek faktor pengganggu (seperti perbedaan ukuran kapal, mesin, lokasi, dan musim).
+        
+        * **CPUE Standar (kg/hari):** Nilai estimasi rerata hasil tangkapan per hari memancing. Nilai ini yang digunakan sebagai indeks kelimpahan stok ikan yang valid.
+        * **Tren Garis & Titik:** Menunjukkan arah perkembangan stok (apakah cenderung naik, stabil, atau mengalami penurunan dari tahun ke tahun/bulan ke bulan).
+        * **Pita / Area Transparan (Shading Area):** Menunjukkan batas selang kepercayaan 95% (Lower CI hingga Upper CI). Jika pita menyempit, estimasi CPUE pada periode tersebut memiliki tingkat presisi yang tinggi.
+        """)
 
     grid_yr_display = None
     grid_tm_table = None
@@ -1585,6 +1637,14 @@ with tab3:
             ax_yr.set_ylabel("CPUE Standar (kg/hari)")
             ax_yr.set_title("Tren CPUE Standar Tahunan", fontweight="bold")
             st.pyplot(fig_yr)
+
+        max_yr_row = grid_yr.loc[grid_yr["CPUE_std (kg/hari)"].idxmax()]
+        min_yr_row = grid_yr.loc[grid_yr["CPUE_std (kg/hari)"].idxmin()]
+        st.info(
+            f"**Interpretasi Tren Tahunan:** Kelimpahan relatif CPUE terstandarisasi tertinggi terjadi pada tahun **{max_yr_row['tahun']}** "
+            f"sebesar **{fmt_num(max_yr_row['CPUE_std (kg/hari)'], 2)} kg/hari**. Sebaliknya, tingkat CPUE terendah berada pada tahun **{min_yr_row['tahun']}** "
+            f"sebesar **{fmt_num(min_yr_row['CPUE_std (kg/hari)'], 2)} kg/hari**."
+        )
 
         st.markdown("---")
 
@@ -1692,6 +1752,17 @@ with tab3:
                 fontweight="bold",
             )
             st.pyplot(fig_mo)
+
+        max_tm_row = grid_tm.loc[grid_tm["CPUE_std (kg/hari)"].idxmax()]
+        min_tm_row = grid_tm.loc[grid_tm["CPUE_std (kg/hari)"].idxmin()]
+        lbl_max = month_map.get(str(max_tm_row[time_cat]), str(max_tm_row[time_cat])) if time_cat == "bulan" else str(max_tm_row[time_cat])
+        lbl_min = month_map.get(str(min_tm_row[time_cat]), str(min_tm_row[time_cat])) if time_cat == "bulan" else str(min_tm_row[time_cat])
+
+        st.info(
+            f"**Interpretasi Pola {time_cat.title()}:** Puncak musim penangkapan terjadi pada **{lbl_max}** "
+            f"dengan nilai rata-rata CPUE terstandar sebesar **{fmt_num(max_tm_row['CPUE_std (kg/hari)'], 2)} kg/hari**, "
+            f"sedangkan periode terendah berada pada **{lbl_min}** ({fmt_num(min_tm_row['CPUE_std (kg/hari)'], 2)} kg/hari)."
+        )
 
     img_res_b64 = fig_to_base64(fig_res) if fig_res else None
     img_grid_b64 = fig_to_base64(fig_grid) if fig_grid else None
