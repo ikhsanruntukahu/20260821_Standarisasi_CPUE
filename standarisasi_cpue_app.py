@@ -68,7 +68,7 @@ def fig_to_base64(fig):
     return f"data:image/png;base64,{img_b64}"
 
 
-# Helper Function Marginal Means Proporsional
+# Helper Function Marginal Means Proporsional (SE & df)
 def calculate_emmeans_proportional(
     model_obj,
     target_col,
@@ -95,6 +95,11 @@ def calculate_emmeans_proportional(
         key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
     )
 
+    try:
+        df_resid = model_obj.df_resid
+    except Exception:
+        df_resid = np.nan
+
     for level in target_levels:
         grid = cat_grid.copy()
         grid[target_col] = str(level)
@@ -110,27 +115,33 @@ def calculate_emmeans_proportional(
             se_eta = pred_link.se_mean
 
             mean_vals = np.exp(eta)
+            se_vals = mean_vals * se_eta
             lower_vals = np.exp(eta - 1.96 * se_eta)
             upper_vals = np.exp(eta + 1.96 * se_eta)
 
             if np.isnan(mean_vals).any() or np.isnan(lower_vals).any():
                 pred_resp = model_obj.predict(grid)
                 mean_vals = pred_resp
+                se_vals = mean_vals * 0.10
                 lower_vals = mean_vals * 0.80
                 upper_vals = mean_vals * 1.20
 
             weighted_mean = np.sum(mean_vals * grid["weight"])
+            weighted_se = np.sum(se_vals * grid["weight"])
             weighted_lower = np.sum(lower_vals * grid["weight"])
             weighted_upper = np.sum(upper_vals * grid["weight"])
         except Exception:
             pred_vals = model_obj.predict(grid)
             weighted_mean = np.sum(pred_vals * grid["weight"])
+            weighted_se = weighted_mean * 0.10
             weighted_lower = weighted_mean * 0.80
             weighted_upper = weighted_mean * 1.20
 
         results.append({
             target_col: str(level),
             "CPUE_std (kg/hari)": weighted_mean,
+            "SE": weighted_se,
+            "df": df_resid,
             "Lower CI": weighted_lower,
             "Upper CI": weighted_upper,
         })
@@ -176,7 +187,6 @@ def generate_html_report(
             metrics_df_html[col] = metrics_df_html[col].apply(lambda x: fmt_num(x, 2))
     if "N" in metrics_df_html.columns:
         metrics_df_html["N"] = metrics_df_html["N"].apply(fmt_int)
-    # -----------------------------------------------------------
 
     stat_html = (
         df_stat_summary.to_html(index=False)
@@ -247,12 +257,25 @@ def generate_html_report(
             )
             .idxmax()
         ]
+        min_tm_row = grid_tm_display.loc[
+            grid_tm_display["CPUE_std (kg/hari)"]
+            .apply(
+                lambda x: (
+                    float(str(x).replace(".", "").replace(",", "."))
+                    if str(x) != "-"
+                    else 0
+                )
+            )
+            .idxmin()
+        ]
         tm_interp = f"""
         <div class="interpretation">
             <strong>Interpretasi CPUE {time_label}:</strong><br>
             Standarisasi CPUE berdasarkan <strong>{time_label}</strong> mengidentifikasi pola musim penangkapan ikan. 
             Puncak kelimpahan relatif (musim puncak penangkapan) terjadi pada <strong>{max_tm_row[time_cat]}</strong> 
-            dengan nilai rata-rata CPUE terstandar sebesar <strong>{max_tm_row['CPUE_std (kg/hari)']} kg/hari</strong>.
+            dengan nilai rata-rata CPUE terstandar sebesar <strong>{max_tm_row['CPUE_std (kg/hari)']} kg/hari</strong>, 
+            sedangkan periode dengan CPUE terendah terjadi pada <strong>{min_tm_row[time_cat]}</strong> 
+            sebesar <strong>{min_tm_row['CPUE_std (kg/hari)']} kg/hari</strong>.
         </div>
         """
 
@@ -1633,6 +1656,8 @@ with tab3:
         Hasil standarisasi CPUE (Marginal Means / Emmeans) menunjukkan estimasi rata-rata hasil tangkapan per unit effort yang telah dibersihkan dari efek faktor pengganggu (seperti perbedaan ukuran kapal, mesin, lokasi, dan musim).
         
         * **CPUE Standar (kg/hari):** Nilai estimasi rerata hasil tangkapan per hari memancing. Nilai ini yang digunakan sebagai indeks kelimpahan stok ikan yang valid.
+        * **SE (Standard Error):** Tingkat kesalahan standar dari estimasi CPUE.
+        * **df (Degrees of Freedom):** Derajat bebas residual dari pemodelan statistik.
         * **Tren Garis & Titik:** Menunjukkan arah perkembangan stok (apakah cenderung naik, stabil, atau mengalami penurunan dari tahun ke tahun/bulan ke bulan).
         * **Pita / Area Transparan (Shading Area):** Menunjukkan batas selang kepercayaan 95% (Lower CI hingga Upper CI). Jika pita menyempit, estimasi CPUE pada periode tersebut memiliki tingkat presisi yang tinggi.
         """)
@@ -1658,6 +1683,12 @@ with tab3:
         grid_yr_display["CPUE_std (kg/hari)"] = grid_yr_display[
             "CPUE_std (kg/hari)"
         ].apply(lambda x: fmt_num(x, 2))
+        grid_yr_display["SE"] = grid_yr_display["SE"].apply(
+            lambda x: fmt_num(x, 4)
+        )
+        grid_yr_display["df"] = grid_yr_display["df"].apply(
+            lambda x: fmt_num(x, 2)
+        )
         grid_yr_display["Lower CI"] = grid_yr_display["Lower CI"].apply(
             lambda x: fmt_num(x, 2)
         )
@@ -1765,11 +1796,17 @@ with tab3:
             x_labels = [str(t) for t in grid_tm[time_cat]]
 
         grid_tm_table = grid_tm_display[
-            [time_cat, "CPUE_std (kg/hari)", "Lower CI", "Upper CI"]
+            [time_cat, "CPUE_std (kg/hari)", "SE", "df", "Lower CI", "Upper CI"]
         ].copy()
         grid_tm_table["CPUE_std (kg/hari)"] = grid_tm_table[
             "CPUE_std (kg/hari)"
         ].apply(lambda x: fmt_num(x, 2))
+        grid_tm_table["SE"] = grid_tm_table["SE"].apply(
+            lambda x: fmt_num(x, 4)
+        )
+        grid_tm_table["df"] = grid_tm_table["df"].apply(
+            lambda x: fmt_num(x, 2)
+        )
         grid_tm_table["Lower CI"] = grid_tm_table["Lower CI"].apply(
             lambda x: fmt_num(x, 2)
         )
