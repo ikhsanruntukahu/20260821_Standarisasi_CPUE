@@ -37,7 +37,7 @@ month_map = {
 }
 
 
-# Helper Function Format Angka Indonesia
+# Helper Function Format Angka
 def fmt_num(val, decimals=2):
     if pd.isna(val) or val is None:
         return "-"
@@ -68,7 +68,7 @@ def fig_to_base64(fig):
     return f"data:image/png;base64,{img_b64}"
 
 
-# Helper Function Marginal Means Proporsional ala R (emmeans)
+# Helper Function Marginal Means Proporsional
 def calculate_emmeans_proportional(
     model_obj,
     target_col,
@@ -138,7 +138,7 @@ def calculate_emmeans_proportional(
     return pd.DataFrame(results)
 
 
-# Helper Function Generator Laporan Eksekutif HTML
+# Helper Function Generator Laporan HTML
 def generate_html_report(
     best_model_name,
     metrics_df,
@@ -168,6 +168,15 @@ def generate_html_report(
 
     best_aic = fmt_num(raw_aic_val, 2)
     best_r2 = fmt_num(raw_r2_val * 100, 2)
+    
+    # --- Format angka tabel Evaluasi Model---
+    metrics_df_html = metrics_df.copy()
+    for col in ["AIC", "Deviance", "Null_Deviance", "Pseudo_R2", "Overdispersion_Ratio", "Delta_AIC"]:
+        if col in metrics_df_html.columns:
+            metrics_df_html[col] = metrics_df_html[col].apply(lambda x: fmt_num(x, 2))
+    if "N" in metrics_df_html.columns:
+        metrics_df_html["N"] = metrics_df_html["N"].apply(fmt_int)
+    # -----------------------------------------------------------
 
     stat_html = (
         df_stat_summary.to_html(index=False)
@@ -213,7 +222,7 @@ def generate_html_report(
         ]
         yr_interp = f"""
         <div class="interpretation">
-            <strong>Interpretasi Tren Tahunan:</strong><br>
+            <strong>Interpretasi CPUE Tahunan:</strong><br>
             Hasil standarisasi CPUE tahunan menunjukkan fluktuasi kelimpahan relatif ikan Yellowfin Tuna (YFT). 
             Tingkat CPUE terstandar tertinggi dicapai pada tahun <strong>{max_yr_row['tahun']}</strong> yaitu sebesar 
             <strong>{max_yr_row['CPUE_std (kg/hari)']} kg/hari</strong>, sedangkan CPUE terendah tercatat pada tahun 
@@ -240,7 +249,7 @@ def generate_html_report(
         ]
         tm_interp = f"""
         <div class="interpretation">
-            <strong>Interpretasi Pola {time_label}:</strong><br>
+            <strong>Interpretasi CPUE {time_label}:</strong><br>
             Standarisasi CPUE berdasarkan <strong>{time_label}</strong> mengidentifikasi pola musim penangkapan ikan. 
             Puncak kelimpahan relatif (musim puncak penangkapan) terjadi pada <strong>{max_tm_row[time_cat]}</strong> 
             dengan nilai rata-rata CPUE terstandar sebesar <strong>{max_tm_row['CPUE_std (kg/hari)']} kg/hari</strong>.
@@ -329,7 +338,7 @@ def generate_html_report(
             <div class="page-break"></div>
             
             <h2>3. Evaluasi & Perbandingan Model</h2>
-            {metrics_df.to_html(index=False)}
+            {metrics_df_html.to_html(index=False)}
             <div class="interpretation">
                 <strong>Interpretasi Evaluasi Model:</strong><br>
                 Sesuai petunjuk dalam buku pedoman standarisasi CPUE, model <strong>{best_model_name}</strong> terpilih sebagai model terbaik berdasarkan kriteria <strong>Rasio Overdispersi terendah</strong> dan <strong>AIC terendah</strong>.
@@ -602,7 +611,7 @@ if effort_col:
 df_model = df.dropna(subset=used_cols).copy()
 
 with st.expander(
-    "🔍 Deteksi Pencilan & Nilai Ekstrem (Outlier Detection)", expanded=False
+    "Deteksi Outlier & Nilai Ekstrem", expanded=False
 ):
     st.caption(
         "Pemeriksaan visual Boxplot dan filter statistik IQR untuk mencegah"
@@ -931,72 +940,131 @@ with tab0:
     st.markdown("---")
     st.subheader("Visualisasi Sebaran Data (Boxplot)")
 
-    st.markdown("**Boxplot Variabel Target (`berat_kg`)**")
+    st.markdown("**Boxplot Variabel Target (`berat_kg`) Berdasarkan Kategori Utama & Faktor Lingkungan**")
+
+    # BARIS 1: SELURUH DATA, PER TAHUN, DAN PER BULAN (AGREGAT SELURUH TAHUN)
+    fig_bkg1, (ax_b0, ax_b1, ax_b2) = plt.subplots(1, 3, figsize=(16, 5))
+
+    # 1. Seluruh Data
+    sns.boxplot(y=df_model["berat_kg"], ax=ax_b0, color="#0E4C92")
+    ax_b0.set_title("Berat Ikan (Seluruh Data)", fontsize=9, fontweight="bold")
+    ax_b0.set_ylabel("Berat (kg)", fontsize=8)
+
+    # 2. Per Tahun
     if "tahun" in df_model.columns:
-        fig_bkg, (ax_bkg1, ax_bkg2) = plt.subplots(1, 2, figsize=(12, 4))
-        sns.boxplot(y=df_model["berat_kg"], ax=ax_bkg1, color="#0E4C92")
-        ax_bkg1.set_title(
-            "Boxplot Berat Ikan (seluruh data)", fontsize=10, fontweight="bold"
-        )
-        ax_bkg1.set_ylabel("Berat (kg)")
-
         df_sort_yr = df_model.copy()
-        df_sort_yr["tahun_sort"] = pd.to_numeric(
-            df_sort_yr["tahun"], errors="coerce"
-        )
+        df_sort_yr["tahun_sort"] = pd.to_numeric(df_sort_yr["tahun"], errors="coerce")
         df_sort_yr = df_sort_yr.sort_values("tahun_sort", na_position="last")
-
-        sns.boxplot(
-            x="tahun",
-            y="berat_kg",
-            data=df_sort_yr,
-            ax=ax_bkg2,
-            palette="Blues",
-        )
-        ax_bkg2.set_title(
-            "Boxplot Berat Ikan (Per Tahun)", fontsize=10, fontweight="bold"
-        )
-        ax_bkg2.set_xlabel("Tahun")
-        ax_bkg2.set_ylabel("Berat (kg)")
-        ax_bkg2.set_xticklabels(
-            ax_bkg2.get_xticklabels(), rotation=30, ha="right"
-        )
+        sns.boxplot(x="tahun", y="berat_kg", data=df_sort_yr, ax=ax_b1, palette="Blues")
+        ax_b1.set_title("Berat Ikan Per Tahun", fontsize=9, fontweight="bold")
+        ax_b1.set_xlabel("Tahun", fontsize=8)
+        ax_b1.set_ylabel("Berat (kg)", fontsize=8)
+        ax_b1.set_xticklabels(ax_b1.get_xticklabels(), rotation=30, ha="right", fontsize=8)
     else:
-        fig_bkg, ax_bkg1 = plt.subplots(figsize=(6, 4))
-        sns.boxplot(y=df_model["berat_kg"], ax=ax_bkg1, color="#0E4C92")
-        ax_bkg1.set_title("Boxplot Berat Ikan", fontsize=10, fontweight="bold")
-        ax_bkg1.set_ylabel("Berat (kg)")
+        ax_b1.axis("off")
+
+    # 3. Per Bulan (Agregat Seluruh Tahun)
+    if "bulan" in df_model.columns:
+        df_sort_mo = df_model.copy()
+        df_sort_mo["bulan_num"] = pd.to_numeric(df_sort_mo["bulan"], errors="coerce")
+        df_sort_mo = df_sort_mo.sort_values("bulan_num")
+        df_sort_mo["bulan_lbl"] = df_sort_mo["bulan_num"].astype(str).map(
+            lambda x: month_map.get(str(int(float(x))) if str(x).replace('.', '').isdigit() else str(x), str(x))
+        )
+        sns.boxplot(x="bulan_lbl", y="berat_kg", data=df_sort_mo, ax=ax_b2, palette="Greens")
+        ax_b2.set_title("Berat Ikan Per Bulan (Agregat)", fontsize=9, fontweight="bold")
+        ax_b2.set_xlabel("Bulan", fontsize=8)
+        ax_b2.set_ylabel("Berat (kg)", fontsize=8)
+        ax_b2.set_xticklabels(ax_b2.get_xticklabels(), rotation=30, ha="right", fontsize=8)
+    else:
+        ax_b2.axis("off")
 
     plt.tight_layout()
-    st.pyplot(fig_bkg)
-    plt.close(fig_bkg)
+    st.pyplot(fig_bkg1)
+    plt.close(fig_bkg1)
 
-    other_nums = [c for c in num_list if c != "berat_kg"]
-    if other_nums:
-        st.markdown("**Boxplot Variabel Numerik Lainnya**")
-        n_other = len(other_nums)
-        cols_per_row = 3
-        rows_other = int(np.ceil(n_other / cols_per_row))
 
-        fig_num_box, axes_num_box = plt.subplots(
-            rows_other, cols_per_row, figsize=(14, 3.5 * rows_other)
-        )
-        axes_num_flat = (
-            axes_num_box.flatten() if n_other > 1 else [axes_num_box]
-        )
+    # MENGGABUNGKAN SISA PLOT (Kategori Lingkungan & Variabel Numerik Lainnya)
+    plot_tasks = []
+    
+    if "quarter" in df_model.columns:
+        df_sort_q = df_model.copy()
+        df_sort_q["quarter_num"] = pd.to_numeric(df_sort_q["quarter"], errors="coerce")
+        df_sort_q = df_sort_q.sort_values("quarter_num", na_position="last")
+        plot_tasks.append({
+            "type": "cat", "x": "quarter", "y": "berat_kg", "data": df_sort_q,
+            "title": "Berat Ikan Per Kuartal", "xlabel": "Kuartal", "palette": "YlOrBr", "rot": 0
+        })
 
-        for idx_n, col_n in enumerate(other_nums):
-            ax_n = axes_num_flat[idx_n]
-            sns.boxplot(y=df_model[col_n], ax=ax_n, color="#E67E22")
-            ax_n.set_title(f"Boxplot {col_n}", fontsize=10, fontweight="bold")
-            ax_n.set_ylabel(col_n)
+    tech_col = next((c for c in ["teknik_penangkapan", "jenis_alat_tangkap", "alat_tangkap"] if c in df_model.columns), None)
+    if tech_col:
+        plot_tasks.append({
+            "type": "cat", "x": tech_col, "y": "berat_kg", "data": df_model,
+            "title": f"Berat Ikan Per {tech_col.replace('_', ' ').title()}", "xlabel": tech_col.replace('_', ' ').title(), "palette": "Oranges", "rot": 30
+        })
 
-        for i in range(n_other, len(axes_num_flat)):
-            fig_num_box.delaxes(axes_num_flat[i])
+    has_sst = "sst" in df_model.columns and df_model["sst"].nunique() > 1
+    if has_sst:
+        df_sst = df_model.copy()
+        try:
+            df_sst["sst_bin"] = pd.qcut(df_sst["sst"], q=4, duplicates="drop")
+            df_sst["sst_lbl"] = df_sst["sst_bin"].apply(lambda interval: f"{fmt_num(interval.left, 1)}–{fmt_num(interval.right, 1)} °C")
+        except Exception:
+            df_sst["sst_bin"] = pd.cut(df_sst["sst"], bins=4)
+            df_sst["sst_lbl"] = df_sst["sst_bin"].apply(lambda interval: f"{fmt_num(interval.left, 1)}–{fmt_num(interval.right, 1)} °C")
+        plot_tasks.append({
+            "type": "cat", "x": "sst_lbl", "y": "berat_kg", "data": df_sst,
+            "title": "Berat Ikan Per Rentang Suhu (SST)", "xlabel": "Rentang Suhu (°C)", "palette": "Reds", "rot": 30
+        })
+
+    has_chl = "chl_a" in df_model.columns and df_model["chl_a"].nunique() > 1
+    if has_chl:
+        df_chl = df_model.copy()
+        try:
+            df_chl["chl_bin"] = pd.qcut(df_chl["chl_a"], q=4, duplicates="drop")
+            df_chl["chl_lbl"] = df_chl["chl_bin"].apply(lambda interval: f"{fmt_num(interval.left, 2)}–{fmt_num(interval.right, 2)} mg/m³")
+        except Exception:
+            df_chl["chl_bin"] = pd.cut(df_chl["chl_a"], bins=4)
+            df_chl["chl_lbl"] = df_chl["chl_bin"].apply(lambda interval: f"{fmt_num(interval.left, 2)}–{fmt_num(interval.right, 2)} mg/m³")
+        plot_tasks.append({
+            "type": "cat", "x": "chl_lbl", "y": "berat_kg", "data": df_chl,
+            "title": "Berat Ikan Per Rentang Klorofil-a", "xlabel": "Rentang Klorofil-a (mg/m³)", "palette": "Purples", "rot": 30
+        })
+
+    other_nums = [c for c in num_list if c not in ["berat_kg", "sst", "chl_a"]]
+    for col_n in other_nums:
+        plot_tasks.append({
+            "type": "num", "y": col_n, "data": df_model,
+            "title": f"Boxplot {col_n}", "ylabel": col_n
+        })
+
+    if plot_tasks:
+        n_plots = len(plot_tasks)
+        cols_per_row = 4
+        rows_other = int(np.ceil(n_plots / cols_per_row))
+        fig_comb, axes_comb = plt.subplots(rows_other, cols_per_row, figsize=(16, 4.2 * rows_other))
+        axes_flat = axes_comb.flatten() if n_plots > 1 else [axes_comb]
+
+        for idx, task in enumerate(plot_tasks):
+            ax = axes_flat[idx]
+            if task["type"] == "cat":
+                sns.boxplot(x=task["x"], y=task["y"], data=task["data"], ax=ax, palette=task["palette"])
+                ax.set_title(task["title"], fontsize=9, fontweight="bold")
+                ax.set_xlabel(task["xlabel"], fontsize=8)
+                ax.set_ylabel("Berat (kg)", fontsize=8)
+                ax.set_xticklabels(ax.get_xticklabels(), rotation=task["rot"], ha="right" if task["rot"]>0 else "center", fontsize=8)
+            elif task["type"] == "num":
+                sns.boxplot(y=task["data"][task["y"]], ax=ax, color="#C08B5C")
+                ax.set_title(task["title"], fontsize=9, fontweight="bold")
+                ax.set_ylabel(task["ylabel"], fontsize=8)
+
+        for i in range(n_plots, len(axes_flat)):
+            fig_comb.delaxes(axes_flat[i])
 
         plt.tight_layout()
-        st.pyplot(fig_num_box)
-        plt.close(fig_num_box)
+        st.pyplot(fig_comb)
+        plt.close(fig_comb)
+
 
     st.markdown("---")
 
@@ -1035,7 +1103,18 @@ with tab0:
         "kesimpulan": norm_kesimpulan,
     }
 
-    fig_norm, (ax_dens, ax_qq) = plt.subplots(1, 2, figsize=(12, 4.5))
+    fig_norm, (ax_freq, ax_dens, ax_qq) = plt.subplots(1, 3, figsize=(16, 4.5))
+
+    min_val = np.floor(target_data.min()) if len(target_data) > 0 else 0
+    max_val = np.ceil(target_data.max()) if len(target_data) > 0 else 1
+    bins_1kg = np.arange(min_val, max_val + 2, 1)
+
+    sns.histplot(
+        target_data, bins=bins_1kg, ax=ax_freq, color="#1ABC9C", stat="count"
+    )
+    ax_freq.set_title("Plot Frekuensi", fontweight="bold")
+    ax_freq.set_xlabel("berat_kg")
+    ax_freq.set_ylabel("Frekuensi")
 
     sns.histplot(
         target_data, kde=True, ax=ax_dens, color="#0E4C92", stat="density"
@@ -1253,6 +1332,17 @@ with tab1:
     st.markdown("---")
     st.subheader("Residual Plot Model")
 
+    with st.expander("Panduan membaca Residual Plot Model", expanded=False):
+        st.markdown("""
+        Plot residual digunakan untuk memeriksa keakuratan prediksi dan apakah asumsi model telah terpenuhi.
+        
+        * **Sumbu X (Fitted Values):** Nilai estimasi atau prediksi hasil tangkapan yang dihasilkan oleh model.
+        * **Sumbu Y (Response Residuals):** Sisaan (selisih) antara nilai hasil tangkapan aktual dengan nilai prediksi model.
+        * **Garis Putus-putus Merah (Nol):** Titik ideal di mana tidak ada selisih (prediksi sama persis dengan aktual).
+        * **Pola yang Baik / Ideal:** Titik-titik data tersebar secara acak dan merata di atas maupun di bawah garis merah, tanpa membentuk pola yang jelas.
+        * **Indikasi Masalah Model:** Jika titik-titik membentuk pola tertentu seperti *corong* (melebar atau menyempit searah sumbu X) atau pola *lengkungan*, hal ini menandakan model belum sepenuhnya menangkap varians data secara sempurna (misalnya terdapat efek heteroskedastisitas atau efek non-linear yang tidak terjelaskan).
+        """)
+
     fig_res, axes = plt.subplots(2, 2, figsize=(14, 10))
     axes_list = axes.flatten()
 
@@ -1332,7 +1422,7 @@ with tab2:
     st.subheader(f"Plot Efek Parsial Parameter ({selected_model_name_t2})")
 
     # PANDUAN MEMBACA PLOT EFEK PARSIAL
-    with st.expander("Panduan Plot Efek Parsial", expanded=False):
+    with st.expander("Panduan membaca Plot Efek Parsial", expanded=False):
         st.markdown("""
         Plot efek parsial menggambarkan kontribusi isolasi dari masing-masing variabel terhadap hasil tangkapan (CPUE) dengan mengasumsikan variabel lainnya konstan.
         
@@ -1538,7 +1628,7 @@ with tab3:
     st.subheader(f"Hasil Standarisasi CPUE ({selected_model_name_t3})")
 
     # PANDUAN MEMBACA STANDARISASI CPUE
-    with st.expander("Panduan CPUE Terstandar", expanded=False):
+    with st.expander("Panduan membaca CPUE Terstandar", expanded=False):
         st.markdown("""
         Hasil standarisasi CPUE (Marginal Means / Emmeans) menunjukkan estimasi rata-rata hasil tangkapan per unit effort yang telah dibersihkan dari efek faktor pengganggu (seperti perbedaan ukuran kapal, mesin, lokasi, dan musim).
         
@@ -1577,7 +1667,7 @@ with tab3:
 
         col_t1, col_t2 = st.columns([1, 1.5])
         with col_t1:
-            st.markdown("**CPUE Standar Tahunan (Marginal Means)**")
+            st.markdown("**CPUE Standar Tahunan**")
             st.dataframe(grid_yr_display, use_container_width=False, hide_index=True)
 
         with col_t2:
@@ -1641,7 +1731,7 @@ with tab3:
         max_yr_row = grid_yr.loc[grid_yr["CPUE_std (kg/hari)"].idxmax()]
         min_yr_row = grid_yr.loc[grid_yr["CPUE_std (kg/hari)"].idxmin()]
         st.info(
-            f"**Interpretasi Tren Tahunan:** Kelimpahan relatif CPUE terstandarisasi tertinggi terjadi pada tahun **{max_yr_row['tahun']}** "
+            f"**Interpretasi CPUE Tahunan:** Kelimpahan relatif CPUE terstandarisasi tertinggi terjadi pada tahun **{max_yr_row['tahun']}** "
             f"sebesar **{fmt_num(max_yr_row['CPUE_std (kg/hari)'], 2)} kg/hari**. Sebaliknya, tingkat CPUE terendah berada pada tahun **{min_yr_row['tahun']}** "
             f"sebesar **{fmt_num(min_yr_row['CPUE_std (kg/hari)'], 2)} kg/hari**."
         )
@@ -1759,7 +1849,7 @@ with tab3:
         lbl_min = month_map.get(str(min_tm_row[time_cat]), str(min_tm_row[time_cat])) if time_cat == "bulan" else str(min_tm_row[time_cat])
 
         st.info(
-            f"**Interpretasi Pola {time_cat.title()}:** Puncak musim penangkapan terjadi pada **{lbl_max}** "
+            f"**Interpretasi CPUE {time_cat.title()}:** Puncak musim penangkapan terjadi pada **{lbl_max}** "
             f"dengan nilai rata-rata CPUE terstandar sebesar **{fmt_num(max_tm_row['CPUE_std (kg/hari)'], 2)} kg/hari**, "
             f"sedangkan periode terendah berada pada **{lbl_min}** ({fmt_num(min_tm_row['CPUE_std (kg/hari)'], 2)} kg/hari)."
         )
