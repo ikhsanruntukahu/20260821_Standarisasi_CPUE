@@ -1142,7 +1142,10 @@ with tab0:
             "title": "Berat Ikan Per Rentang Klorofil-a", "xlabel": "Rentang Klorofil-a (mg/m³)", "palette": "Purples", "rot": 30
         })
 
-    other_nums = [c for c in num_list if c not in ["berat_kg", "sst", "chl_a"]]
+    other_nums = [c for c in num_list if c != "berat_kg"]
+    for c in ["sst", "chl_a"]:
+        if c in df_model.columns and c not in other_nums:
+            other_nums.append(c)
     for col_n in other_nums:
         plot_tasks.append({
             "type": "num", "y": col_n, "data": df_model,
