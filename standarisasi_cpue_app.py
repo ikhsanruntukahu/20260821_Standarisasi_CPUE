@@ -402,6 +402,78 @@ def generate_html_report(
     return html_content
 
 
+# Helper Function Seleksi Model Mundur (Backward Elimination berbasis AIC)
+def backward_elimination_aic(base_terms, term_labels, df_data, offset_col, response="berat_kg"):
+    """
+    Mereplikasi logika drop1()/stepwise regression pada buku pedoman:
+    setiap iterasi mencoba menghapus satu term, lalu term yang jika dihapus
+    justru menurunkan AIC model akan dibuang secara permanen dari model.
+    Proses berhenti ketika tidak ada lagi term yang jika dihapus menurunkan AIC,
+    atau ketika tinggal 1 term tersisa. Model dasar yang dipakai untuk seleksi
+    adalah GLM Poisson (konsisten dengan tahap awal pemilihan model di buku).
+    """
+    current_terms = list(base_terms)
+    log_rows = []
+
+    def fit_aic(terms_list):
+        formula = f"{response} ~ " + " + ".join(terms_list) if terms_list else f"{response} ~ 1"
+        mod = smf.glm(
+            formula=formula,
+            data=df_data,
+            offset=df_data[offset_col],
+            family=sm.families.Poisson(link=sm.families.links.Log()),
+        ).fit()
+        return mod.aic
+
+    try:
+        aic_current = fit_aic(current_terms)
+    except Exception:
+        return current_terms, pd.DataFrame([{
+            "Iterasi": "-",
+            "Term Dievaluasi": "-",
+            "AIC Jika Dihapus": "-",
+            "Keputusan": "Gagal menghitung AIC awal — seleksi model dilewati.",
+        }])
+
+    iterasi = 0
+    while len(current_terms) > 1:
+        iterasi += 1
+        aic_if_dropped = {}
+        for term in current_terms:
+            reduced = [t for t in current_terms if t != term]
+            try:
+                aic_if_dropped[term] = fit_aic(reduced)
+            except Exception:
+                aic_if_dropped[term] = np.inf
+
+        for term in current_terms:
+            log_rows.append({
+                "Iterasi": iterasi,
+                "Term Dievaluasi": term_labels.get(term, term),
+                "AIC Model Penuh": fmt_num(aic_current, 2),
+                "AIC Jika Dihapus": fmt_num(aic_if_dropped[term], 2),
+                "Keputusan": "-",
+            })
+
+        term_to_drop = min(aic_if_dropped, key=aic_if_dropped.get)
+        best_aic_after_drop = aic_if_dropped[term_to_drop]
+
+        if best_aic_after_drop < aic_current:
+            for row in log_rows[-len(current_terms):]:
+                if row["Term Dievaluasi"] == term_labels.get(term_to_drop, term_to_drop):
+                    row["Keputusan"] = "Dihapus (AIC menurun)"
+                else:
+                    row["Keputusan"] = "Dipertahankan pada iterasi ini"
+            current_terms.remove(term_to_drop)
+            aic_current = best_aic_after_drop
+        else:
+            for row in log_rows[-len(current_terms):]:
+                row["Keputusan"] = "Dipertahankan (menghapus term manapun menaikkan AIC)"
+            break
+
+    return current_terms, pd.DataFrame(log_rows)
+
+
 # =========================================================
 # 1. KONFIGURASI HALAMAN & STYLING STREAMLIT
 # =========================================================
@@ -725,7 +797,23 @@ if not glm_terms:
     st.error("❌ Tidak ada variabel prediktor yang valid untuk dimodelkan.")
     st.stop()
 
-formula_glm = "berat_kg ~ " + " + ".join(glm_terms)
+term_labels = {f"C({c})": c for c in valid_cats}
+term_labels.update({c: c for c in valid_nums})
+
+with st.spinner("Melakukan seleksi model (backward elimination berbasis AIC)..."):
+    selected_terms, selection_log_df = backward_elimination_aic(
+        glm_terms, term_labels, df_model, "log_effort", response="berat_kg"
+    )
+
+dropped_terms = [t for t in glm_terms if t not in selected_terms]
+dropped_labels = [term_labels.get(t, t) for t in dropped_terms]
+kept_labels = [term_labels.get(t, t) for t in selected_terms]
+
+final_terms = selected_terms if selected_terms else glm_terms
+formula_glm = "berat_kg ~ " + " + ".join(final_terms)
+
+selected_cats = [c for c in valid_cats if f"C({c})" in final_terms]
+selected_nums = [c for c in valid_nums if c in final_terms]
 
 models = {}
 with st.spinner("Sedang melatih model GLM & GAM..."):
@@ -796,17 +884,17 @@ with st.spinner("Sedang melatih model GLM & GAM..."):
 
     # 5. GAM Negative Binomial
     gam_success = False
-    if valid_nums:
+    if selected_nums:
         try:
-            gam_linear_terms = [f"C({c})" for c in valid_cats]
+            gam_linear_terms = [f"C({c})" for c in selected_cats]
             formula_gam_lin = (
                 "berat_kg ~ " + " + ".join(gam_linear_terms)
                 if gam_linear_terms
                 else "berat_kg ~ 1"
             )
-            x_spline = df_model[valid_nums]
+            x_spline = df_model[selected_nums]
             bs_obj = BSplines(
-                x_spline, df=[4] * len(valid_nums), degree=[3] * len(valid_nums)
+                x_spline, df=[4] * len(selected_nums), degree=[3] * len(selected_nums)
             )
 
             gam_model = GLMGam.from_formula(
@@ -828,8 +916,8 @@ with st.spinner("Sedang melatih model GLM & GAM..."):
 
         if not gam_success:
             try:
-                gam_terms = [f"C({c})" for c in valid_cats]
-                for c in valid_nums:
+                gam_terms = [f"C({c})" for c in selected_cats]
+                for c in selected_nums:
                     if df_model[c].nunique() > 4:
                         gam_terms.append(f"bs({c}, df=4)")
                     else:
@@ -1223,8 +1311,130 @@ with tab0:
     except Exception as e:
         st.error(f"Gagal menghitung VIF: {e}")
 
+    st.markdown("---")
+
+    st.subheader("4. Heatmap Korelasi Antar Variabel Numerik")
+    try:
+        corr_cols = list(
+            dict.fromkeys(
+                ["berat_kg"]
+                + valid_nums
+                + ([effort_col] if effort_col else [])
+            )
+        )
+        corr_cols = [c for c in corr_cols if c in df_model.columns]
+        df_corr = df_model[corr_cols].corr(method="pearson")
+
+        fig_corr, ax_corr = plt.subplots(
+            figsize=(max(5, 0.9 * len(corr_cols)), max(4, 0.8 * len(corr_cols)))
+        )
+        sns.heatmap(
+            df_corr,
+            annot=True,
+            fmt=".2f",
+            cmap="RdBu_r",
+            vmin=-1,
+            vmax=1,
+            center=0,
+            square=True,
+            linewidths=0.6,
+            linecolor="white",
+            cbar_kws={"shrink": 0.8, "label": "Koefisien Korelasi (r)"},
+            ax=ax_corr,
+        )
+        ax_corr.set_title(
+            "Matriks Korelasi Pearson Antar Variabel Numerik",
+            fontsize=10,
+            fontweight="bold",
+        )
+        plt.tight_layout()
+
+        col_corr, _ = st.columns([2.2, 1])
+        with col_corr:
+            st.pyplot(fig_corr)
+        plt.close(fig_corr)
+
+        corr_pairs = (
+            df_corr.where(
+                np.triu(np.ones(df_corr.shape), k=1).astype(bool)
+            )
+            .stack()
+            .sort_values(key=lambda s: s.abs(), ascending=False)
+        )
+        top_corr_rows = []
+        for (var_a, var_b), r_val in corr_pairs.head(5).items():
+            top_corr_rows.append({
+                "Pasangan Variabel": f"{var_a} — {var_b}",
+                "Koefisien Korelasi (r)": fmt_num(r_val, 3),
+                "Kekuatan Hubungan": (
+                    "Sangat Kuat (|r| > 0,8)"
+                    if abs(r_val) > 0.8
+                    else (
+                        "Kuat (|r| 0,6–0,8)"
+                        if abs(r_val) > 0.6
+                        else (
+                            "Sedang (|r| 0,4–0,6)"
+                            if abs(r_val) > 0.4
+                            else "Lemah (|r| < 0,4)"
+                        )
+                    )
+                ),
+            })
+        if top_corr_rows:
+            st.markdown("**5 Pasangan Variabel dengan Korelasi Absolut Tertinggi**")
+            col_topcorr, _ = st.columns([2.2, 1])
+            with col_topcorr:
+                st.dataframe(
+                    pd.DataFrame(top_corr_rows),
+                    use_container_width=False,
+                    hide_index=True,
+                )
+
+        st.caption(
+            "Nilai mendekati **+1** menunjukkan korelasi positif kuat, mendekati **-1** korelasi negatif kuat,"
+            " dan mendekati **0** berarti tidak ada hubungan linear yang berarti. Pasangan variabel dengan korelasi"
+            " absolut tinggi (|r| > 0,8) sebaiknya dikonfirmasi ulang dengan nilai VIF pada tabel di atas, karena"
+            " berpotensi menimbulkan multikolinearitas dalam model."
+        )
+    except Exception as e:
+        st.error(f"Gagal membuat heatmap korelasi: {e}")
+
 # --- TAB 1: EVALUASI MODEL ---
 with tab1:
+    st.subheader("0. Seleksi Model (Backward Elimination berbasis AIC)")
+    with st.expander(
+        "Panduan membaca hasil seleksi model", expanded=False
+    ):
+        st.markdown("""
+        Langkah ini mereplikasi proses `drop1()` / *stepwise regression* pada buku pedoman standarisasi CPUE.
+        Model global (seluruh variabel kandidat) dievaluasi menggunakan GLM Poisson, lalu pada setiap iterasi
+        dicoba menghapus satu variabel — variabel yang jika dihapus justru **menurunkan AIC** akan dibuang secara
+        permanen dari model. Proses berulang sampai tidak ada lagi variabel yang jika dihapus menurunkan AIC.
+        Variabel yang tersisa (final) inilah yang dipakai untuk seluruh model (GLM Poisson, Negative Binomial,
+        Tweedie, dan GAM) pada tahapan analisis berikutnya.
+        """)
+
+    col_sel1, col_sel2 = st.columns(2)
+    with col_sel1:
+        st.markdown("**Variabel Dipertahankan (Model Final)**")
+        if kept_labels:
+            st.success(", ".join(kept_labels))
+        else:
+            st.warning("Tidak ada variabel yang dipertahankan.")
+    with col_sel2:
+        st.markdown("**Variabel Dihapus (Tidak Signifikan / Menaikkan AIC)**")
+        if dropped_labels:
+            st.error(", ".join(dropped_labels))
+        else:
+            st.info("Tidak ada variabel yang dihapus — seluruh variabel kandidat dipertahankan.")
+
+    if not selection_log_df.empty:
+        st.markdown("**Rincian Iterasi Seleksi Model**")
+        col_sellog, _ = st.columns([3, 1])
+        with col_sellog:
+            st.dataframe(selection_log_df, use_container_width=False, hide_index=True)
+
+    st.markdown("---")
     st.subheader("Ringkasan Perbandingan Model")
 
     best_row_info = metrics_df[metrics_df["Model"] == best_model_name].iloc[0]
