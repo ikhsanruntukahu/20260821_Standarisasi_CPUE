@@ -68,8 +68,36 @@ def fig_to_base64(fig):
     return f"data:image/png;base64,{img_b64}"
 
 
+# Helper Function Mengambil DesignInfo Model Secara Konsisten
+def get_model_design_info(model_obj, df_orig):
+    mod = getattr(model_obj, "model", model_obj)
+    
+    # Periksa lokasi tersimpannya design_info pada GLM/GLMGam
+    possible_attrs = [
+        getattr(mod, "design_info_linear", None),
+        getattr(getattr(mod, "data", None), "design_info", None),
+        getattr(mod, "design_info", None),
+        getattr(getattr(getattr(mod, "data", None), "orig_exog", None), "design_info", None),
+    ]
+    for di in possible_attrs:
+        if di is not None:
+            return di
+            
+    # Fallback: Buat ulang design_info utuh berdasarkan df_orig
+    formula_str = (
+        getattr(mod, "formula", None)
+        or getattr(mod, "formula_linear", None)
+        or getattr(getattr(mod, "data", None), "formula", None)
+    )
+    if formula_str is not None:
+        rhs = formula_str.split("~")[1] if "~" in formula_str else formula_str
+        return dmatrix(rhs, df_orig, return_type="dataframe").design_info
+        
+    raise AttributeError("Objek model tidak memiliki 'design_info' maupun 'formula' yang valid.")
+
+
 # =========================================================
-# FUNGSI CALCULATE EMMEANS PROPORTIONAL (DIPERBARUI)
+# FUNGSI CALCULATE EMMEANS PROPORTIONAL (DIPERBARUI PERMANEN)
 # =========================================================
 def calculate_emmeans_proportional(
     model_obj,
@@ -102,37 +130,24 @@ def calculate_emmeans_proportional(
     except Exception:
         df_resid = np.nan
 
-    # --- Parameter model & matriks kovarians (dipakai untuk SE metode delta) ---
+    # Parameter model & matriks kovarians (dipakai untuk SE metode delta)
     beta = np.asarray(model_obj.params, dtype=float)
     cov = np.asarray(model_obj.cov_params(), dtype=float)
+    mod = getattr(model_obj, "model", model_obj)
+
+    try:
+        design_info = get_model_design_info(model_obj, df_orig)
+    except Exception as e:
+        st.error(f"Gagal mengekstrak struktur desain model: {e}")
+        st.stop()
 
     def design_rows(grid_df):
-        """Matriks desain untuk setiap baris grid, dibangun dengan aturan
-        yang sama seperti saat model dilatih (kategori, spline bs(), dan
-        penghalus GAM jika ada)."""
-        mod = model_obj.model
-        
-        # Pengecekan bertingkat untuk design_info / formula pada berbagai versi statsmodels & GLMGam
-        design_info = getattr(mod.data, "design_info", None)
-        if design_info is None:
-            design_info = getattr(mod, "design_info", None)
-
-        if design_info is not None:
-            X = np.asarray(
-                dmatrix(design_info, grid_df, return_type="dataframe"),
-                dtype=float,
-            )
-        else:
-            formula_str = getattr(mod, "formula", None) or getattr(mod.data, "formula", None)
-            if formula_str is not None:
-                rhs = formula_str.split("~")[1] if "~" in formula_str else formula_str
-                X = np.asarray(
-                    dmatrix(rhs, grid_df, return_type="dataframe"),
-                    dtype=float,
-                )
-            else:
-                raise AttributeError("Objek model tidak memiliki 'design_info' maupun 'formula' yang valid.")
-
+        """Matriks desain dibangun menggunakan DesignInfo utuh
+        sehingga seluruh kategori variabel dipertahankan secara konsisten."""
+        X = np.asarray(
+            dmatrix(design_info, grid_df, return_type="dataframe"),
+            dtype=float,
+        )
         smoother = getattr(mod, "smoother", None)
         if smoother is not None:  # GLMGam: tambahkan basis penghalus
             smooth_vars = list(smoother.variable_names)
@@ -164,13 +179,11 @@ def calculate_emmeans_proportional(
             mu = np.exp(eta)
             weighted_mean = float(np.sum(w * mu))
 
-            # SE metode delta: gradien estimator terhadap parameter, lalu
-            # SE = sqrt(g' V g) dengan V = matriks kovarians parameter
+            # SE metode delta
             grad = X.T @ (w * mu)
             weighted_se = float(np.sqrt(grad @ cov @ grad))
 
-            # CI 95% dihitung pada skala log agar selalu positif:
-            # exp(log(CPUE) ± 1,96 * SE/CPUE)
+            # CI 95% dihitung pada skala log agar selalu positif
             se_log = weighted_se / weighted_mean
             weighted_lower = weighted_mean * np.exp(-1.96 * se_log)
             weighted_upper = weighted_mean * np.exp(1.96 * se_log)
@@ -224,7 +237,6 @@ def generate_html_report(
     best_aic = fmt_num(raw_aic_val, 2)
     best_r2 = fmt_num(raw_r2_val * 100, 2)
     
-    # --- Format angka tabel Evaluasi Model---
     metrics_df_html = metrics_df.copy()
     for col in ["AIC", "Deviance", "Null_Deviance", "Pseudo_R2", "Overdispersion_Ratio", "Delta_AIC"]:
         if col in metrics_df_html.columns:
@@ -448,14 +460,6 @@ def generate_html_report(
 
 # Helper Function Seleksi Model Mundur (Backward Elimination berbasis AIC)
 def backward_elimination_aic(base_terms, term_labels, df_data, offset_col, response="berat_kg"):
-    """
-    Mereplikasi logika drop1()/stepwise regression pada buku pedoman:
-    setiap iterasi mencoba menghapus satu term, lalu term yang jika dihapus
-    justru menurunkan AIC model akan dibuang secara permanen dari model.
-    Proses berhenti ketika tidak ada lagi term yang jika dihapus menurunkan AIC,
-    atau ketika tinggal 1 term tersisa. Model dasar yang dipakai untuk seleksi
-    adalah GLM Poisson (konsisten dengan tahap awal pemilihan model di buku).
-    """
     current_terms = list(base_terms)
     log_rows = []
 
@@ -1138,8 +1142,6 @@ with tab0:
     st.pyplot(fig_bkg1)
     plt.close(fig_bkg1)
 
-
-    # MENGGABUNGKAN SISA PLOT (Kategori Lingkungan & Variabel Numerik Lainnya)
     plot_tasks = []
     
     if "quarter" in df_model.columns:
@@ -1222,7 +1224,6 @@ with tab0:
         plt.tight_layout()
         st.pyplot(fig_comb)
         plt.close(fig_comb)
-
 
     st.markdown("---")
 
@@ -1439,9 +1440,7 @@ with tab0:
 
         st.caption(
             "Nilai mendekati **+1** menunjukkan korelasi positif kuat, mendekati **-1** korelasi negatif kuat,"
-            " dan mendekati **0** berarti tidak ada hubungan linear yang berarti. Pasangan variabel dengan korelasi"
-            " absolut tinggi (|r| > 0,8) sebaiknya dikonfirmasi ulang dengan nilai VIF pada tabel di atas, karena"
-            " berpotensi menimbulkan multikolinearitas dalam model."
+            " dan mendekati **0** berarti tidak ada hubungan linear yang berarti."
         )
     except Exception as e:
         st.error(f"Gagal membuat heatmap korelasi: {e}")
@@ -1454,11 +1453,8 @@ with tab1:
     ):
         st.markdown("""
         Langkah ini mereplikasi proses `drop1()` / *stepwise regression* pada buku pedoman standarisasi CPUE.
-        Model global (seluruh variabel kandidat) dievaluasi menggunakan GLM Poisson, lalu pada setiap iterasi
-        dicoba menghapus satu variabel — variabel yang jika dihapus justru **menurunkan AIC** akan dibuang secara
-        permanen dari model. Proses berulang sampai tidak ada lagi variabel yang jika dihapus menurunkan AIC.
-        Variabel yang tersisa (final) inilah yang dipakai untuk seluruh model (GLM Poisson, Negative Binomial,
-        Tweedie, dan GAM) pada tahapan analisis berikutnya.
+        Model global dievaluasi menggunakan GLM Poisson, lalu pada setiap iterasi dicoba menghapus satu variabel.
+        Variabel yang jika dihapus justru **menurunkan AIC** akan dibuang secara permanen dari model.
         """)
 
     col_sel1, col_sel2 = st.columns(2)
@@ -1473,7 +1469,7 @@ with tab1:
         if dropped_labels:
             st.error(", ".join(dropped_labels))
         else:
-            st.info("Tidak ada variabel yang dihapus — seluruh variabel kandidat dipertahankan.")
+            st.info("Tidak ada variabel yang dihapus.")
 
     if not selection_log_df.empty:
         st.markdown("**Rincian Iterasi Seleksi Model**")
@@ -1616,11 +1612,8 @@ with tab1:
         st.markdown("""
         Plot residual digunakan untuk memeriksa keakuratan prediksi dan apakah asumsi model telah terpenuhi.
         
-        * **Sumbu X (Fitted Values):** Nilai estimasi atau prediksi hasil tangkapan yang dihasilkan oleh model.
-        * **Sumbu Y (Response Residuals):** Sisaan (selisih) antara nilai hasil tangkapan aktual dengan nilai prediksi model.
-        * **Garis Putus-putus Merah (Nol):** Titik ideal di mana tidak ada selisih (prediksi sama persis dengan aktual).
-        * **Pola yang Baik / Ideal:** Titik-titik data tersebar secara acak dan merata di atas maupun di bawah garis merah, tanpa membentuk pola yang jelas.
-        * **Indikasi Masalah Model:** Jika titik-titik membentuk pola tertentu seperti *corong* (melebar atau menyempit searah sumbu X) atau pola *lengkungan*, hal ini menandakan model belum sepenuhnya menangkap varians data secara sempurna (misalnya terdapat efek heteroskedastisitas atau efek non-linear yang tidak terjelaskan).
+        * **Sumbu X (Fitted Values):** Nilai estimasi hasil tangkapan.
+        * **Sumbu Y (Response Residuals):** Selisih nilai hasil tangkapan aktual dengan estimasi model.
         """)
 
     fig_res, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -1649,9 +1642,6 @@ with tab1:
     plt.tight_layout()
     st.pyplot(fig_res)
 
-    # ---------------------------------------------------------
-    # RINCIAN KOEFISIEN DAN UJI DISPERSI SELURUH MODEL
-    # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("Rincian Koefisien dan Pengujian Dispersi Seluruh Model")
 
@@ -1661,7 +1651,6 @@ with tab1:
         expander_title = f"Rincian Model: {m_name} " + ("(Model Terpilih)" if is_best else "")
 
         with st.expander(expander_title, expanded=is_best):
-            # 1. Perhitungan Uji Overdispersi
             disp_ratio_val = mod_detail.pearson_chi2 / mod_detail.df_resid
             p_val_disp = 1 - stats.chi2.cdf(mod_detail.pearson_chi2, mod_detail.df_resid)
 
@@ -1676,14 +1665,12 @@ with tab1:
             else:
                 st.success(f"**Dispersi Ideal:** Rasio dispersi ({fmt_num(disp_ratio_val, 2)}) berada dalam batas wajar.")
 
-            # 2. Ringkasan Deviance & AIC
             null_df_val = int(mod_detail.df_model + mod_detail.df_resid)
             st.markdown("**Ringkasan Deviance dan AIC Model**")
             st.write(f"- **Null Deviance:** `{fmt_num(mod_detail.null_deviance, 2)}` pada `{null_df_val}` derajat bebas")
             st.write(f"- **Residual Deviance:** `{fmt_num(mod_detail.deviance, 2)}` pada `{fmt_int(mod_detail.df_resid)}` derajat bebas")
             st.write(f"- **AIC:** `{fmt_num(mod_detail.aic, 2)}`")
 
-            # 3. Tampilan Teks Ringkasan Rinci
             st.markdown("**Tabel Koefisien Lengkap**")
             st.text(mod_detail.summary().as_text())
 
@@ -1701,22 +1688,9 @@ with tab2:
     model_tab2 = models[selected_model_name_t2]
     st.subheader(f"Plot Efek Parsial Parameter ({selected_model_name_t2})")
 
-    # PANDUAN MEMBACA PLOT EFEK PARSIAL
     with st.expander("Panduan membaca Plot Efek Parsial", expanded=False):
         st.markdown("""
         Plot efek parsial menggambarkan kontribusi isolasi dari masing-masing variabel terhadap hasil tangkapan (CPUE) dengan mengasumsikan variabel lainnya konstan.
-        
-        * **Sumbu Y (Partial Effect - Skala Log):**
-          * **Nilai > 0:** Variabel memberikan pengaruh positif (meningkatkan CPUE terstandar).
-          * **Nilai = 0 (Garis Merah):** Variabel bersifat netral / tidak mengubah CPUE.
-          * **Nilai < 0:** Variabel memberikan pengaruh negatif (menurunkan CPUE terstandar).
-        * **Grafik Garis (Variabel Numerik):**
-          * **Garis Solid (Hitam):** Tren arah pengaruh variabel. Jika melengkung/naik-turun, menandakan pola hubungan non-linear (GAM/Spline).
-          * **Garis Putus-putus:** Selang Kepercayaan 95% (Confidence Interval). Semakin sempit rentangnya, semakin pasti estimasi dampaknya.
-        * **Grafik Batang (Variabel Kategorikal):**
-          * Batang di atas garis merah (0) = Kategori tersebut meningkatkan CPUE.
-          * Batang di bawah garis merah (0) = Kategori tersebut menurunkan CPUE.
-          * **Error Bar (Garis I):** Rentang variasi estimasi pada kategori tersebut.
         """)
 
     defaults = {"log_effort": 0.0}
@@ -1907,16 +1881,9 @@ with tab3:
     model_tab3 = models[selected_model_name_t3]
     st.subheader(f"Hasil Standarisasi CPUE ({selected_model_name_t3})")
 
-    # PANDUAN MEMBACA STANDARISASI CPUE
     with st.expander("Panduan membaca CPUE Terstandar", expanded=False):
         st.markdown("""
-        Hasil standarisasi CPUE (Marginal Means / Emmeans) menunjukkan estimasi rata-rata hasil tangkapan per unit effort yang telah dibersihkan dari efek faktor pengganggu (seperti perbedaan ukuran kapal, mesin, lokasi, dan musim).
-        
-        * **CPUE Standar (kg/hari):** Nilai estimasi rerata hasil tangkapan per hari memancing. Nilai ini yang digunakan sebagai indeks kelimpahan stok ikan yang valid.
-        * **SE (Standard Error):** Tingkat kesalahan standar dari estimasi CPUE.
-        * **df (Degrees of Freedom):** Derajat bebas residual dari pemodelan statistik.
-        * **Tren Garis & Titik:** Menunjukkan arah perkembangan stok (apakah cenderung naik, stabil, atau mengalami penurunan dari tahun ke tahun/bulan ke bulan).
-        * **Pita / Area Transparan (Shading Area):** Menunjukkan batas selang kepercayaan 95% (Lower CI hingga Upper CI). Jika pita menyempit, estimasi CPUE pada periode tersebut memiliki tingkat presisi yang tinggi.
+        Hasil standarisasi CPUE menunjukkan estimasi rata-rata hasil tangkapan per unit effort yang telah dibersihkan dari efek faktor pengganggu (seperti perbedaan ukuran kapal, mesin, lokasi, dan musim).
         """)
 
     grid_yr_display = None
