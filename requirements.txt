@@ -3,8 +3,8 @@ pandas
 numpy
 matplotlib
 seaborn
-statsmodels
 scipy
+statsmodels>=0.14.0
 patsy
 pillow
 openpyxl
