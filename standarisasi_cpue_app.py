@@ -68,7 +68,11 @@ def fig_to_base64(fig):
     return f"data:image/png;base64,{img_b64}"
 
 
-# Helper Function Marginal Means Proporsional (SE & df)
+# =========================================================
+# PENGGANTI fungsi calculate_emmeans_proportional (hanya fungsi ini yang diganti)
+# Tempel menggantikan fungsi lama di skrip Anda. Impor yang dipakai
+# (numpy as np, pandas as pd, dmatrix dari patsy) sudah ada di bagian atas skrip.
+# =========================================================
 def calculate_emmeans_proportional(
     model_obj,
     target_col,
@@ -100,6 +104,32 @@ def calculate_emmeans_proportional(
     except Exception:
         df_resid = np.nan
 
+    # --- Parameter model & matriks kovarians (dipakai untuk SE metode delta) ---
+    beta = np.asarray(model_obj.params, dtype=float)
+    cov = np.asarray(model_obj.cov_params(), dtype=float)
+
+    def design_rows(grid_df):
+        """Matriks desain untuk setiap baris grid, dibangun dengan aturan
+        yang sama seperti saat model dilatih (kategori, spline bs(), dan
+        penghalus GAM jika ada)."""
+        mod = model_obj.model
+        X = np.asarray(
+            dmatrix(mod.data.design_info, grid_df, return_type="dataframe"),
+            dtype=float,
+        )
+        smoother = getattr(mod, "smoother", None)
+        if smoother is not None:  # GLMGam: tambahkan basis penghalus
+            smooth_vars = list(smoother.variable_names)
+            X = np.column_stack(
+                [X, smoother.transform(grid_df[smooth_vars].to_numpy(dtype=float))]
+            )
+        if X.shape[1] != beta.shape[0]:
+            raise ValueError(
+                f"Jumlah kolom desain ({X.shape[1]}) tidak sama dengan jumlah"
+                f" parameter model ({beta.shape[0]})."
+            )
+        return X
+
     for level in target_levels:
         grid = cat_grid.copy()
         grid[target_col] = str(level)
@@ -110,32 +140,30 @@ def calculate_emmeans_proportional(
         grid[offset_col] = np.log(offset_val)
 
         try:
-            pred_link = model_obj.get_prediction(grid, transform=False)
-            eta = pred_link.predicted_mean
-            se_eta = pred_link.se_mean
+            X = design_rows(grid)
+            w = grid["weight"].to_numpy(dtype=float)
 
-            mean_vals = np.exp(eta)
-            se_vals = mean_vals * se_eta
-            lower_vals = np.exp(eta - 1.96 * se_eta)
-            upper_vals = np.exp(eta + 1.96 * se_eta)
+            # CPUE terstandar = rata-rata tertimbang dari prediksi tiap kombinasi
+            eta = X @ beta + np.log(offset_val)
+            mu = np.exp(eta)
+            weighted_mean = float(np.sum(w * mu))
 
-            if np.isnan(mean_vals).any() or np.isnan(lower_vals).any():
-                pred_resp = model_obj.predict(grid)
-                mean_vals = pred_resp
-                se_vals = mean_vals * 0.10
-                lower_vals = mean_vals * 0.80
-                upper_vals = mean_vals * 1.20
+            # SE metode delta: gradien estimator terhadap parameter, lalu
+            # SE = sqrt(g' V g) dengan V = matriks kovarians parameter
+            grad = X.T @ (w * mu)
+            weighted_se = float(np.sqrt(grad @ cov @ grad))
 
-            weighted_mean = np.sum(mean_vals * grid["weight"])
-            weighted_se = np.sum(se_vals * grid["weight"])
-            weighted_lower = np.sum(lower_vals * grid["weight"])
-            weighted_upper = np.sum(upper_vals * grid["weight"])
-        except Exception:
-            pred_vals = model_obj.predict(grid)
-            weighted_mean = np.sum(pred_vals * grid["weight"])
-            weighted_se = weighted_mean * 0.10
-            weighted_lower = weighted_mean * 0.80
-            weighted_upper = weighted_mean * 1.20
+            # CI 95% dihitung pada skala log agar selalu positif:
+            # exp(log(CPUE) ± 1,96 * SE/CPUE)
+            se_log = weighted_se / weighted_mean
+            weighted_lower = weighted_mean * np.exp(-1.96 * se_log)
+            weighted_upper = weighted_mean * np.exp(1.96 * se_log)
+        except Exception as e:
+            st.error(
+                f"Gagal menghitung SE/CI CPUE terstandar untuk {target_col} ="
+                f" {level}: {e}"
+            )
+            st.stop()
 
         results.append({
             target_col: str(level),
@@ -1404,7 +1432,7 @@ with tab0:
 
 # --- TAB 1: EVALUASI MODEL ---
 with tab1:
-    st.subheader("0. Seleksi Model (Backward Elimination berbasis AIC)")
+    st.subheader("Seleksi Model (Backward Elimination berbasis AIC)")
     with st.expander(
         "Panduan membaca hasil seleksi model", expanded=False
     ):
@@ -1643,7 +1671,7 @@ with tab1:
             st.markdown("**Tabel Koefisien Lengkap**")
             st.text(mod_detail.summary().as_text())
 
-# --- TAB 2: EFEK PARSIAL DINAMIS DENGAN PANDUAN BACA & INTERPRETASI BERSUSUN ---
+# --- TAB 2: EFEK PARSIAL DINAMIS DENGAN PANDUAN ---
 with tab2:
     col_sel_t2, _ = st.columns([2, 1])
     with col_sel_t2:
@@ -1849,7 +1877,7 @@ with tab2:
     st.info(f"**Rangkuman Pengaruh Parsial Variabel terhadap Hasil Tangkapan:**\n\n{interp_clean_str}")
 
 
-# --- TAB 3: STANDARISASI CPUE DENGAN PANDUAN BACA & INTERPRETASI OTOMATIS ---
+# --- TAB 3: STANDARISASI CPUE DENGAN PANDUAN ---
 with tab3:
     col_sel_t3, _ = st.columns([2, 1])
     with col_sel_t3:
