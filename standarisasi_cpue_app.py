@@ -69,9 +69,7 @@ def fig_to_base64(fig):
 
 
 # =========================================================
-# PENGGANTI fungsi calculate_emmeans_proportional (hanya fungsi ini yang diganti)
-# Tempel menggantikan fungsi lama di skrip Anda. Impor yang dipakai
-# (numpy as np, pandas as pd, dmatrix dari patsy) sudah ada di bagian atas skrip.
+# FUNGSI CALCULATE EMMEANS PROPORTIONAL (DIPERBARUI)
 # =========================================================
 def calculate_emmeans_proportional(
     model_obj,
@@ -113,10 +111,28 @@ def calculate_emmeans_proportional(
         yang sama seperti saat model dilatih (kategori, spline bs(), dan
         penghalus GAM jika ada)."""
         mod = model_obj.model
-        X = np.asarray(
-            dmatrix(mod.data.design_info, grid_df, return_type="dataframe"),
-            dtype=float,
-        )
+        
+        # Pengecekan bertingkat untuk design_info / formula pada berbagai versi statsmodels & GLMGam
+        design_info = getattr(mod.data, "design_info", None)
+        if design_info is None:
+            design_info = getattr(mod, "design_info", None)
+
+        if design_info is not None:
+            X = np.asarray(
+                dmatrix(design_info, grid_df, return_type="dataframe"),
+                dtype=float,
+            )
+        else:
+            formula_str = getattr(mod, "formula", None) or getattr(mod.data, "formula", None)
+            if formula_str is not None:
+                rhs = formula_str.split("~")[1] if "~" in formula_str else formula_str
+                X = np.asarray(
+                    dmatrix(rhs, grid_df, return_type="dataframe"),
+                    dtype=float,
+                )
+            else:
+                raise AttributeError("Objek model tidak memiliki 'design_info' maupun 'formula' yang valid.")
+
         smoother = getattr(mod, "smoother", None)
         if smoother is not None:  # GLMGam: tambahkan basis penghalus
             smooth_vars = list(smoother.variable_names)
